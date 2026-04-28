@@ -83,6 +83,8 @@ export const agentRecordSchema = z.object({
   lastHeartbeat: isoTimestampSchema,
   connectedAt: isoTimestampSchema,
   workspacePath: nonEmptyString,
+  currentBranch: nonEmptyString.nullable(),
+  repoUrl: nonEmptyString.nullable(),
 });
 
 export const fileOwnershipSchema = z.object({
@@ -92,6 +94,7 @@ export const fileOwnershipSchema = z.object({
   taskId: nonEmptyString.nullable(),
   claimedAt: isoTimestampSchema,
   expiresAt: isoTimestampSchema.nullable(),
+  branch: nonEmptyString.nullable(),
 });
 
 export const taskSchema = z.object({
@@ -209,6 +212,8 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
     displayName: nonEmptyString,
     tool: agentToolSchema,
     workspacePath: nonEmptyString,
+    currentBranch: nonEmptyString.nullable().optional(),
+    repoUrl: nonEmptyString.nullable().optional(),
   }),
   z.object({ type: z.literal('heartbeat') }),
   z.object({

@@ -45,6 +45,8 @@ export interface ClaimInput {
   readonly taskId?: TaskId | null;
   /** Optional TTL in ms (overrides config default). null = no expiry. */
   readonly ttlMs?: number | null;
+  /** Git branch this claim belongs to (null = unknown). */
+  readonly branch?: string | null;
 }
 
 export interface ClaimResult {
@@ -82,15 +84,28 @@ export class FileOwnershipService {
    */
   claim(input: ClaimInput): ClaimResult {
     return this.store.transaction(() => {
-      const existing = this.store.getFileOwnership(input.filePath);
+      const requestBranch = input.branch ?? null;
 
-      // If someone else already holds this file, check for conflicts
-      if (existing && existing.agentId !== input.agentId) {
-        const conflict = this.detectConflict(existing, input);
-        if (conflict) {
-          this.store.insertConflict(conflict);
-          this.bus.emit({ type: 'conflict_detected', conflict });
-          return { granted: false, ownership: null, conflict };
+      // Check all existing claims for this file path (across all branches)
+      const existingClaims = this.store.getFileOwnershipsByPath(input.filePath);
+
+      for (const existing of existingClaims) {
+        // Skip claims by the same agent on the same branch (re-claim)
+        if (
+          existing.agentId === input.agentId &&
+          existing.branch === requestBranch
+        ) {
+          continue;
+        }
+
+        // Skip claims by different agents — only if from a different agent
+        if (existing.agentId !== input.agentId) {
+          const conflict = this.detectConflict(existing, input);
+          if (conflict) {
+            this.store.insertConflict(conflict);
+            this.bus.emit({ type: 'conflict_detected', conflict });
+            return { granted: false, ownership: null, conflict };
+          }
         }
       }
 
@@ -117,6 +132,7 @@ export class FileOwnershipService {
         taskId: input.taskId ?? null,
         claimedAt: now,
         expiresAt,
+        branch: requestBranch,
       };
 
       this.store.upsertFileOwnership(ownership);
@@ -130,11 +146,12 @@ export class FileOwnershipService {
    * Release a file claim.
    * Returns true if the file was previously claimed, false otherwise.
    */
-  release(filePath: string, agentId: AgentId): boolean {
-    const existing = this.store.getFileOwnership(filePath);
+  release(filePath: string, agentId: AgentId, branch?: string | null): boolean {
+    const branchVal = branch ?? null;
+    const existing = this.store.getFileOwnership(filePath, branchVal);
     if (existing?.agentId !== agentId) return false;
 
-    this.store.deleteFileOwnership(filePath);
+    this.store.deleteFileOwnership(filePath, branchVal);
     this.bus.emit({ type: 'file_released', filePath, agentId });
 
     return true;
@@ -160,20 +177,36 @@ export class FileOwnershipService {
    * Check if a file is available for a given agent and mode.
    * Does not create a claim — just queries the current state.
    */
-  isAvailable(filePath: string, agentId: AgentId, mode: OwnershipMode): boolean {
-    const existing = this.store.getFileOwnership(filePath);
-    if (!existing) return true;
-    if (existing.agentId === agentId) return true;
+  isAvailable(filePath: string, agentId: AgentId, mode: OwnershipMode, branch?: string | null): boolean {
+    const requestBranch = branch ?? null;
+    const existingClaims = this.store.getFileOwnershipsByPath(filePath);
 
-    // Shared + shared = compatible
-    if (existing.mode === 'shared' && mode === 'shared') return true;
+    for (const existing of existingClaims) {
+      if (existing.agentId === agentId) continue;
 
-    return false;
+      // Different branches (both known) → no contention
+      const existingBranch = existing.branch;
+      if (existingBranch && requestBranch && existingBranch !== requestBranch) {
+        continue;
+      }
+
+      // Shared + shared = compatible
+      if (existing.mode === 'shared' && mode === 'shared') continue;
+
+      return false;
+    }
+
+    return true;
   }
 
-  /** Get the current ownership of a file, if any. */
-  getOwnership(filePath: string): FileOwnership | undefined {
-    return this.store.getFileOwnership(filePath);
+  /** Get the current ownership of a file on a specific branch. */
+  getOwnership(filePath: string, branch?: string | null): FileOwnership | undefined {
+    return this.store.getFileOwnership(filePath, branch);
+  }
+
+  /** Get all claims for a file across all branches. */
+  getOwnershipsByPath(filePath: string): readonly FileOwnership[] {
+    return this.store.getFileOwnershipsByPath(filePath);
   }
 
   /** Get all files claimed by a specific agent. */
@@ -195,7 +228,7 @@ export class FileOwnershipService {
     const expired = this.store.getExpiredFiles(now);
 
     for (const file of expired) {
-      this.store.deleteFileOwnership(file.filePath);
+      this.store.deleteFileOwnership(file.filePath, file.branch);
       this.bus.emit({
         type: 'file_released',
         filePath: file.filePath,
@@ -223,7 +256,14 @@ export class FileOwnershipService {
       return null;
     }
 
-    // Determine severity based on modes
+    // Different branches (both known) → no real conflict (isolated work)
+    const existingBranch = existing.branch;
+    const requestBranch = request.branch ?? null;
+    if (existingBranch && requestBranch && existingBranch !== requestBranch) {
+      return null;
+    }
+
+    // Same branch, or unknown branch → existing conflict logic
     const severity =
       existing.mode === 'exclusive' && request.mode === 'exclusive' ? 'high' : 'medium';
 

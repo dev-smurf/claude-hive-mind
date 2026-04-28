@@ -29,6 +29,8 @@ export interface RegisterInput {
   readonly displayName: string;
   readonly tool: AgentTool;
   readonly workspacePath: string;
+  readonly currentBranch?: string | null;
+  readonly repoUrl?: string | null;
 }
 
 export class AgentRegistry {
@@ -67,12 +69,26 @@ export class AgentRegistry {
       lastHeartbeat: now,
       connectedAt: now,
       workspacePath: input.workspacePath,
+      currentBranch: input.currentBranch ?? null,
+      repoUrl: input.repoUrl ?? null,
     };
 
     this.store.upsertAgent(agent);
     this.bus.emit({ type: 'agent_joined', agent });
 
     return agent;
+  }
+
+  /**
+   * Update the current git branch of an agent.
+   * Returns false if the agent doesn't exist.
+   */
+  updateBranch(id: AgentId, branch: string | null): boolean {
+    const agent = this.store.getAgent(id);
+    if (!agent) return false;
+
+    this.store.updateAgentBranch(id, branch);
+    return true;
   }
 
   /**

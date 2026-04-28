@@ -23,6 +23,10 @@ export interface ClientConfig {
   readonly tool: string;
   /** Workspace path on this machine. */
   readonly workspacePath: string;
+  /** Current git branch (optional). */
+  readonly currentBranch?: string | undefined;
+  /** Repository URL (optional). */
+  readonly repoUrl?: string | undefined;
   /** Heartbeat interval in ms. */
   readonly heartbeatIntervalMs?: number | undefined;
   /** HTTP request timeout in ms (default: 30000). */
@@ -51,6 +55,8 @@ export class HiveMindClient {
       displayName: this.config.displayName,
       tool: this.config.tool,
       workspacePath: this.config.workspacePath,
+      ...(this.config.currentBranch !== undefined ? { currentBranch: this.config.currentBranch } : {}),
+      ...(this.config.repoUrl !== undefined ? { repoUrl: this.config.repoUrl } : {}),
     });
 
     const result = data as { id: string };
@@ -89,12 +95,13 @@ export class HiveMindClient {
     return this.get('/api/status');
   }
 
-  async claimFile(filePath: string, mode: string, taskIdVal?: string): Promise<unknown> {
+  async claimFile(filePath: string, mode: string, taskIdVal?: string, branch?: string): Promise<unknown> {
     return this.post('/api/files/claim', {
       filePath,
       agentId: this.requireAgentId(),
       mode,
       taskId: taskIdVal ?? null,
+      ...(branch !== undefined ? { branch } : {}),
     });
   }
 
@@ -165,6 +172,10 @@ export class HiveMindClient {
 
   async resolveConflict(conflictIdVal: string): Promise<unknown> {
     return this.post(`/api/conflicts/${conflictIdVal}/resolve`, {});
+  }
+
+  async updateBranch(branch: string): Promise<unknown> {
+    return this.post(`/api/agents/${this.requireAgentId()}/branch`, { branch });
   }
 
   // -------------------------------------------------------------------------

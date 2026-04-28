@@ -39,7 +39,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 const GABRIEL = agentId('agent-gabriel-01');
 const ALICE = agentId('agent-alice-01');
 
-function registerAgent(store: Store, id: string): void {
+function registerAgent(store: Store, id: string, branch?: string | null): void {
   store.upsertAgent({
     id: agentId(id),
     displayName: `Agent ${id}`,
@@ -49,6 +49,8 @@ function registerAgent(store: Store, id: string): void {
     lastHeartbeat: isoTimestamp(),
     connectedAt: isoTimestamp(),
     workspacePath: '/test',
+    currentBranch: branch ?? null,
+    repoUrl: null,
   });
 }
 
@@ -685,5 +687,182 @@ describe('scenarios', () => {
     const ownership = service.getOwnership('src/app.ts');
     expect(ownership?.agentId).toBe(GABRIEL);
     expect(ownership?.mode).toBe('exclusive');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Branch-aware conflict detection
+// ---------------------------------------------------------------------------
+
+describe('branch awareness', () => {
+  it('allows same file claim on different branches', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: 'main',
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'exclusive',
+      branch: 'feature/auth',
+    });
+
+    expect(result.granted).toBe(true);
+    expect(result.conflict).toBeNull();
+  });
+
+  it('detects conflict on same branch', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: 'main',
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'exclusive',
+      branch: 'main',
+    });
+
+    expect(result.granted).toBe(false);
+    expect(result.conflict).not.toBeNull();
+    expect(result.conflict?.severity).toBe('high');
+  });
+
+  it('detects conflict when branch is null (unknown = conservative)', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: null,
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'exclusive',
+      branch: null,
+    });
+
+    expect(result.granted).toBe(false);
+    expect(result.conflict).not.toBeNull();
+  });
+
+  it('detects conflict when existing branch is null and request has branch', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: null,
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'exclusive',
+      branch: 'feature/auth',
+    });
+
+    expect(result.granted).toBe(false);
+    expect(result.conflict).not.toBeNull();
+  });
+
+  it('detects conflict when request branch is null and existing has branch', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: 'main',
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'exclusive',
+    });
+
+    expect(result.granted).toBe(false);
+    expect(result.conflict).not.toBeNull();
+  });
+
+  it('claim inherits branch from input (not implicit from agent)', () => {
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: 'feature/xyz',
+    });
+
+    expect(result.granted).toBe(true);
+    expect(result.ownership?.branch).toBe('feature/xyz');
+  });
+
+  it('branch defaults to null when not provided', () => {
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+    });
+
+    expect(result.ownership?.branch).toBeNull();
+  });
+
+  it('allows shared+shared on different branches', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'shared',
+      branch: 'main',
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'shared',
+      branch: 'feature/auth',
+    });
+
+    expect(result.granted).toBe(true);
+  });
+
+  it('allows shared+shared on same branch', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'shared',
+      branch: 'main',
+    });
+
+    const result = service.claim({
+      filePath: 'src/app.ts',
+      agentId: ALICE,
+      mode: 'shared',
+      branch: 'main',
+    });
+
+    expect(result.granted).toBe(true);
+  });
+
+  it('isAvailable considers branch isolation', () => {
+    service.claim({
+      filePath: 'src/app.ts',
+      agentId: GABRIEL,
+      mode: 'exclusive',
+      branch: 'main',
+    });
+
+    // Different branch → available
+    expect(service.isAvailable('src/app.ts', ALICE, 'exclusive', 'feature/auth')).toBe(true);
+
+    // Same branch → not available
+    expect(service.isAvailable('src/app.ts', ALICE, 'exclusive', 'main')).toBe(false);
+
+    // Unknown branch → conservative (not available)
+    expect(service.isAvailable('src/app.ts', ALICE, 'exclusive', null)).toBe(false);
   });
 });

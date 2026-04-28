@@ -205,6 +205,66 @@ describe('HTTP API', () => {
       const res = await get(`${base}/api/agents/nonexistent`);
       expect(res.status).toBe(404);
     });
+
+    it('registers agent with branch context', async () => {
+      const res = await post(`${base}/api/agents/register`, {
+        displayName: 'Branch Agent',
+        tool: 'claude-code',
+        workspacePath: '/home/user/project',
+        currentBranch: 'feature/auth',
+        repoUrl: 'https://github.com/dev-smurf/project.git',
+      });
+      expect(res.status).toBe(201);
+      const agent = (await res.json()) as AgentResponse & {
+        currentBranch: string | null;
+        repoUrl: string | null;
+      };
+      expect(agent.currentBranch).toBe('feature/auth');
+      expect(agent.repoUrl).toBe('https://github.com/dev-smurf/project.git');
+    });
+
+    it('updates agent branch', async () => {
+      const agent = await registerAgent(base);
+      const res = await post(`${base}/api/agents/${agent.id}/branch`, {
+        branch: 'feature/new',
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok: boolean };
+      expect(body.ok).toBe(true);
+
+      // Verify via GET
+      const getRes = await get(`${base}/api/agents/${agent.id}`);
+      const updated = (await getRes.json()) as AgentResponse & { currentBranch: string | null };
+      expect(updated.currentBranch).toBe('feature/new');
+    });
+
+    it('returns 404 for branch update of unknown agent', async () => {
+      const res = await post(`${base}/api/agents/nonexistent/branch`, {
+        branch: 'main',
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects branch update without branch field', async () => {
+      const agent = await registerAgent(base);
+      const res = await post(`${base}/api/agents/${agent.id}/branch`, {});
+      expect(res.status).toBe(400);
+    });
+
+    it('allows setting branch to null', async () => {
+      const res = await post(`${base}/api/agents/register`, {
+        displayName: 'Null Branch',
+        tool: 'cursor',
+        workspacePath: '/test',
+        currentBranch: 'main',
+      });
+      const agent = (await res.json()) as AgentResponse;
+
+      const updateRes = await post(`${base}/api/agents/${agent.id}/branch`, {
+        branch: null,
+      });
+      expect(updateRes.status).toBe(200);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -324,6 +384,69 @@ describe('HTTP API', () => {
     it('rejects claim with missing fields', async () => {
       const res = await post(`${base}/api/files/claim`, { filePath: 'src/x.ts' });
       expect(res.status).toBe(400);
+    });
+
+    it('allows same file claimed exclusively on different branches', async () => {
+      const r1 = await post(`${base}/api/files/claim`, {
+        filePath: 'src/shared.ts',
+        agentId: agentA.id,
+        mode: 'exclusive',
+        branch: 'main',
+      });
+      expect(r1.status).toBe(201);
+
+      const r2 = await post(`${base}/api/files/claim`, {
+        filePath: 'src/shared.ts',
+        agentId: agentB.id,
+        mode: 'exclusive',
+        branch: 'feature/auth',
+      });
+      expect(r2.status).toBe(201);
+      const body = (await r2.json()) as { granted: boolean };
+      expect(body.granted).toBe(true);
+    });
+
+    it('detects conflict for same file on same branch', async () => {
+      await post(`${base}/api/files/claim`, {
+        filePath: 'src/conflict.ts',
+        agentId: agentA.id,
+        mode: 'exclusive',
+        branch: 'main',
+      });
+
+      const r2 = await post(`${base}/api/files/claim`, {
+        filePath: 'src/conflict.ts',
+        agentId: agentB.id,
+        mode: 'exclusive',
+        branch: 'main',
+      });
+      expect(r2.status).toBe(409);
+      const body = (await r2.json()) as { granted: boolean };
+      expect(body.granted).toBe(false);
+    });
+
+    it('no conflict when branches are different (no conflict record)', async () => {
+      await post(`${base}/api/files/claim`, {
+        filePath: 'src/isolated.ts',
+        agentId: agentA.id,
+        mode: 'exclusive',
+        branch: 'main',
+      });
+
+      await post(`${base}/api/files/claim`, {
+        filePath: 'src/isolated.ts',
+        agentId: agentB.id,
+        mode: 'exclusive',
+        branch: 'feature/other',
+      });
+
+      const conflictsRes = await get(`${base}/api/conflicts?unresolved=true`);
+      const conflictsList = (await conflictsRes.json()) as unknown[];
+      // No conflicts should be created for different-branch claims
+      const fileConflicts = (conflictsList as { filePaths?: string[] }[]).filter(
+        (c) => c.filePaths?.includes('src/isolated.ts'),
+      );
+      expect(fileConflicts).toHaveLength(0);
     });
 
     it('checks file ownership via direct endpoint (claimed)', async () => {

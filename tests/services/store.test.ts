@@ -123,7 +123,7 @@ describe('file ownership', () => {
 
   it('inserts and retrieves a file claim', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
-    const claim = store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath);
+    const claim = store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch);
     expect(claim).toEqual(OWNERSHIP_EXCLUSIVE);
   });
 
@@ -135,7 +135,7 @@ describe('file ownership', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
     const newClaim = { ...OWNERSHIP_EXCLUSIVE, agentId: AGENT_ALICE.id, mode: 'shared' as const };
     store.upsertFileOwnership(newClaim);
-    const claim = store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath);
+    const claim = store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch);
     expect(claim?.agentId).toBe(AGENT_ALICE.id);
     expect(claim?.mode).toBe('shared');
   });
@@ -156,8 +156,8 @@ describe('file ownership', () => {
 
   it('deletes a specific file claim', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
-    store.deleteFileOwnership(OWNERSHIP_EXCLUSIVE.filePath);
-    expect(store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath)).toBeUndefined();
+    store.deleteFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch);
+    expect(store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch)).toBeUndefined();
   });
 
   it('deletes all files by agent', () => {

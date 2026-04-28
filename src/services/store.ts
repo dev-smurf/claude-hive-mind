@@ -50,6 +50,8 @@ interface AgentRow {
   last_heartbeat: string;
   connected_at: string;
   workspace_path: string;
+  current_branch: string | null;
+  repo_url: string | null;
 }
 
 interface FileOwnershipRow {
@@ -59,6 +61,7 @@ interface FileOwnershipRow {
   task_id: string | null;
   claimed_at: string;
   expires_at: string | null;
+  branch: string; // '' = unknown branch (sentinel for NULL in domain)
 }
 
 interface TaskRow {
@@ -118,6 +121,8 @@ function rowToAgent(row: AgentRow): AgentRecord {
     lastHeartbeat: row.last_heartbeat as ISOTimestamp,
     connectedAt: row.connected_at as ISOTimestamp,
     workspacePath: row.workspace_path,
+    currentBranch: row.current_branch,
+    repoUrl: row.repo_url,
   };
 }
 
@@ -129,6 +134,7 @@ function rowToFileOwnership(row: FileOwnershipRow): FileOwnership {
     taskId: row.task_id ? taskId(row.task_id) : null,
     claimedAt: row.claimed_at as ISOTimestamp,
     expiresAt: row.expires_at as ISOTimestamp | null,
+    branch: row.branch || null, // '' sentinel → null in domain
   };
 }
 
@@ -196,16 +202,20 @@ const SCHEMA = `
     current_task_id TEXT,
     last_heartbeat  TEXT NOT NULL,
     connected_at    TEXT NOT NULL,
-    workspace_path  TEXT NOT NULL
+    workspace_path  TEXT NOT NULL,
+    current_branch  TEXT,
+    repo_url        TEXT
   );
 
   CREATE TABLE IF NOT EXISTS file_ownership (
-    file_path   TEXT PRIMARY KEY,
+    file_path   TEXT NOT NULL,
     agent_id    TEXT NOT NULL,
     mode        TEXT NOT NULL,
     task_id     TEXT,
     claimed_at  TEXT NOT NULL,
     expires_at  TEXT,
+    branch      TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (file_path, branch),
     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
   );
 
@@ -258,6 +268,7 @@ const SCHEMA = `
   );
 
   CREATE INDEX IF NOT EXISTS idx_file_ownership_agent ON file_ownership(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_file_ownership_branch ON file_ownership(branch);
   CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
   CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
   CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge(agent_id);
@@ -292,15 +303,17 @@ export class Store {
   upsertAgent(agent: AgentRecord): void {
     this.db
       .prepare(
-        `INSERT INTO agents (id, display_name, tool, status, current_task_id, last_heartbeat, connected_at, workspace_path)
-         VALUES (@id, @displayName, @tool, @status, @currentTaskId, @lastHeartbeat, @connectedAt, @workspacePath)
+        `INSERT INTO agents (id, display_name, tool, status, current_task_id, last_heartbeat, connected_at, workspace_path, current_branch, repo_url)
+         VALUES (@id, @displayName, @tool, @status, @currentTaskId, @lastHeartbeat, @connectedAt, @workspacePath, @currentBranch, @repoUrl)
          ON CONFLICT(id) DO UPDATE SET
            display_name = @displayName,
            tool = @tool,
            status = @status,
            current_task_id = @currentTaskId,
            last_heartbeat = @lastHeartbeat,
-           workspace_path = @workspacePath`,
+           workspace_path = @workspacePath,
+           current_branch = @currentBranch,
+           repo_url = @repoUrl`,
       )
       .run({
         id: agent.id,
@@ -311,6 +324,8 @@ export class Store {
         lastHeartbeat: agent.lastHeartbeat,
         connectedAt: agent.connectedAt,
         workspacePath: agent.workspacePath,
+        currentBranch: agent.currentBranch,
+        repoUrl: agent.repoUrl,
       });
   }
 
@@ -338,6 +353,10 @@ export class Store {
     this.db.prepare('UPDATE agents SET current_task_id = ? WHERE id = ?').run(currentTaskId, id);
   }
 
+  updateAgentBranch(id: AgentId, branch: string | null): void {
+    this.db.prepare('UPDATE agents SET current_branch = ? WHERE id = ?').run(branch, id);
+  }
+
   deleteAgent(id: AgentId): void {
     this.db.prepare('DELETE FROM agents WHERE id = ?').run(id);
   }
@@ -356,9 +375,9 @@ export class Store {
   upsertFileOwnership(ownership: FileOwnership): void {
     this.db
       .prepare(
-        `INSERT INTO file_ownership (file_path, agent_id, mode, task_id, claimed_at, expires_at)
-         VALUES (@filePath, @agentId, @mode, @taskId, @claimedAt, @expiresAt)
-         ON CONFLICT(file_path) DO UPDATE SET
+        `INSERT INTO file_ownership (file_path, agent_id, mode, task_id, claimed_at, expires_at, branch)
+         VALUES (@filePath, @agentId, @mode, @taskId, @claimedAt, @expiresAt, @branch)
+         ON CONFLICT(file_path, branch) DO UPDATE SET
            agent_id = @agentId,
            mode = @mode,
            task_id = @taskId,
@@ -372,14 +391,24 @@ export class Store {
         taskId: ownership.taskId,
         claimedAt: ownership.claimedAt,
         expiresAt: ownership.expiresAt,
+        branch: ownership.branch ?? '', // null → '' sentinel in DB
       });
   }
 
-  getFileOwnership(filePath: string): FileOwnership | undefined {
+  getFileOwnership(filePath: string, branch?: string | null): FileOwnership | undefined {
+    const branchVal = branch ?? '';
     const row = this.db
-      .prepare('SELECT * FROM file_ownership WHERE file_path = ?')
-      .get(filePath) as FileOwnershipRow | undefined;
+      .prepare('SELECT * FROM file_ownership WHERE file_path = ? AND branch = ?')
+      .get(filePath, branchVal) as FileOwnershipRow | undefined;
     return row ? rowToFileOwnership(row) : undefined;
+  }
+
+  /** Get all claims for a file path across all branches. */
+  getFileOwnershipsByPath(filePath: string): readonly FileOwnership[] {
+    const rows = this.db
+      .prepare('SELECT * FROM file_ownership WHERE file_path = ? ORDER BY claimed_at')
+      .all(filePath) as FileOwnershipRow[];
+    return rows.map(rowToFileOwnership);
   }
 
   getFilesByAgent(agentIdVal: AgentId): readonly FileOwnership[] {
@@ -396,8 +425,11 @@ export class Store {
     return rows.map(rowToFileOwnership);
   }
 
-  deleteFileOwnership(filePath: string): void {
-    this.db.prepare('DELETE FROM file_ownership WHERE file_path = ?').run(filePath);
+  deleteFileOwnership(filePath: string, branch?: string | null): void {
+    const branchVal = branch ?? '';
+    this.db
+      .prepare('DELETE FROM file_ownership WHERE file_path = ? AND branch = ?')
+      .run(filePath, branchVal);
   }
 
   deleteFilesByAgent(agentIdVal: AgentId): void {

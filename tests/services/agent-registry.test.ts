@@ -533,3 +533,65 @@ describe('cleanup interval', () => {
     registry.stopCleanupInterval();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Branch context
+// ---------------------------------------------------------------------------
+
+describe('branch context', () => {
+  it('registers agent with branch context', () => {
+    const agent = registry.register({
+      ...GABRIEL_INPUT,
+      currentBranch: 'main',
+      repoUrl: 'https://github.com/dev-smurf/project.git',
+    });
+
+    expect(agent.currentBranch).toBe('main');
+    expect(agent.repoUrl).toBe('https://github.com/dev-smurf/project.git');
+  });
+
+  it('defaults branch and repoUrl to null when not provided', () => {
+    const agent = registry.register(GABRIEL_INPUT);
+    expect(agent.currentBranch).toBeNull();
+    expect(agent.repoUrl).toBeNull();
+  });
+
+  it('persists branch context in the store', () => {
+    const agent = registry.register({
+      ...GABRIEL_INPUT,
+      currentBranch: 'feature/auth',
+      repoUrl: 'https://github.com/test/repo.git',
+    });
+
+    const stored = store.getAgent(agent.id);
+    expect(stored?.currentBranch).toBe('feature/auth');
+    expect(stored?.repoUrl).toBe('https://github.com/test/repo.git');
+  });
+
+  it('updates agent branch', () => {
+    const agent = registry.register({
+      ...GABRIEL_INPUT,
+      currentBranch: 'main',
+    });
+
+    const ok = registry.updateBranch(agent.id, 'feature/new');
+    expect(ok).toBe(true);
+
+    const updated = store.getAgent(agent.id);
+    expect(updated?.currentBranch).toBe('feature/new');
+  });
+
+  it('updateBranch returns false for non-existent agent', () => {
+    expect(registry.updateBranch(agentId('nope'), 'main')).toBe(false);
+  });
+
+  it('updateBranch accepts null to clear branch', () => {
+    const agent = registry.register({
+      ...GABRIEL_INPUT,
+      currentBranch: 'main',
+    });
+
+    registry.updateBranch(agent.id, null);
+    expect(store.getAgent(agent.id)?.currentBranch).toBeNull();
+  });
+});

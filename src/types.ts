@@ -58,6 +58,10 @@ export interface AgentRecord {
   readonly connectedAt: ISOTimestamp;
   /** Workspace root path on the agent's machine */
   readonly workspacePath: string;
+  /** Current git branch this agent is working on (null = unknown) */
+  readonly currentBranch: string | null;
+  /** Repository URL for this agent's workspace (null = unknown) */
+  readonly repoUrl: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +90,8 @@ export interface FileOwnership {
   readonly claimedAt: ISOTimestamp;
   /** When the claim auto-expires (null = manual release only) */
   readonly expiresAt: ISOTimestamp | null;
+  /** Git branch this claim belongs to (null = unknown) */
+  readonly branch: string | null;
 }
 
 // ---------------------------------------------------------------------------

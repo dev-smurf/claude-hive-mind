@@ -111,6 +111,7 @@ async function executeToolCall(
         args.filePath as string,
         args.mode as string,
         args.taskId as string | undefined,
+        args.branch as string | undefined,
       );
 
     case 'hive_release_file':
@@ -175,6 +176,9 @@ async function executeToolCall(
 
     case 'hive_resolve_conflict':
       return client.resolveConflict(args.conflictId as string);
+
+    case 'hive_update_branch':
+      return client.updateBranch(args.branch as string);
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

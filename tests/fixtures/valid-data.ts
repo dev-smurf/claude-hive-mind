@@ -40,6 +40,8 @@ export const AGENT_GABRIEL: AgentRecord = {
   lastHeartbeat: NOW,
   connectedAt: EARLIER,
   workspacePath: '/home/gabriel/project',
+  currentBranch: 'main',
+  repoUrl: 'https://github.com/dev-smurf/project.git',
 };
 
 export const AGENT_ALICE: AgentRecord = {
@@ -51,6 +53,8 @@ export const AGENT_ALICE: AgentRecord = {
   lastHeartbeat: NOW,
   connectedAt: EARLIER,
   workspacePath: '/home/alice/project',
+  currentBranch: 'feature/auth',
+  repoUrl: 'https://github.com/dev-smurf/project.git',
 };
 
 export const AGENT_IDLE: AgentRecord = {
@@ -62,6 +66,8 @@ export const AGENT_IDLE: AgentRecord = {
   lastHeartbeat: EARLIER,
   connectedAt: EARLIER,
   workspacePath: '/home/bob/project',
+  currentBranch: null,
+  repoUrl: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -75,6 +81,7 @@ export const OWNERSHIP_EXCLUSIVE: FileOwnership = {
   taskId: taskId('task-001'),
   claimedAt: NOW,
   expiresAt: LATER,
+  branch: 'main',
 };
 
 export const OWNERSHIP_SHARED: FileOwnership = {
@@ -84,6 +91,7 @@ export const OWNERSHIP_SHARED: FileOwnership = {
   taskId: null,
   claimedAt: NOW,
   expiresAt: null,
+  branch: null,
 };
 
 // ---------------------------------------------------------------------------

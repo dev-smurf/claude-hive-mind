@@ -61,10 +61,12 @@ export function createRoutes(services: RouteServices): Router {
   // -------------------------------------------------------------------------
 
   router.post('/api/agents/register', (req: Request, res: Response) => {
-    const { displayName, tool, workspacePath } = req.body as {
+    const { displayName, tool, workspacePath, currentBranch, repoUrl } = req.body as {
       displayName?: string;
       tool?: string;
       workspacePath?: string;
+      currentBranch?: string | null;
+      repoUrl?: string | null;
     };
 
     if (!displayName || !tool || !workspacePath) {
@@ -76,6 +78,8 @@ export function createRoutes(services: RouteServices): Router {
       displayName,
       tool: tool as AgentTool,
       workspacePath,
+      ...(currentBranch !== undefined ? { currentBranch } : {}),
+      ...(repoUrl !== undefined ? { repoUrl } : {}),
     });
 
     res.status(201).json(agent);
@@ -83,6 +87,21 @@ export function createRoutes(services: RouteServices): Router {
 
   router.post('/api/agents/:id/heartbeat', (req: Request, res: Response) => {
     const ok = registry.heartbeat(agentId(param(req, 'id')));
+    if (!ok) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  router.post('/api/agents/:id/branch', (req: Request, res: Response) => {
+    const { branch } = req.body as { branch?: string | null };
+    if (branch === undefined) {
+      res.status(400).json({ error: 'Missing required field: branch' });
+      return;
+    }
+
+    const ok = registry.updateBranch(agentId(param(req, 'id')), branch);
     if (!ok) {
       res.status(404).json({ error: 'Agent not found' });
       return;
@@ -123,12 +142,14 @@ export function createRoutes(services: RouteServices): Router {
       mode,
       taskId: tid,
       ttlMs,
+      branch,
     } = req.body as {
       filePath?: string;
       agentId?: string;
       mode?: string;
       taskId?: string;
       ttlMs?: number | null;
+      branch?: string | null;
     };
 
     if (!filePath || !aid || !mode) {
@@ -142,6 +163,7 @@ export function createRoutes(services: RouteServices): Router {
       mode: mode as OwnershipMode,
       taskId: tid ? taskId(tid) : null,
       ...(ttlMs !== undefined ? { ttlMs } : {}),
+      ...(branch !== undefined ? { branch } : {}),
     });
 
     if (result.granted) {

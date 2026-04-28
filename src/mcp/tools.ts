@@ -18,6 +18,7 @@ export const hiveClaimFileSchema = z.object({
   filePath: z.string().describe('Path to the file to claim (repo-relative or absolute)'),
   mode: z.enum(['exclusive', 'shared']).describe('Exclusive lock or shared access'),
   taskId: z.string().optional().describe('Associated task ID'),
+  branch: z.string().optional().describe('Git branch for this claim (enables branch-aware conflict detection)'),
 });
 
 export const hiveReleaseFileSchema = z.object({
@@ -80,6 +81,10 @@ export const hiveGetConflictsSchema = z.object({});
 
 export const hiveResolveConflictSchema = z.object({
   conflictId: z.string().describe('ID of the conflict to resolve'),
+});
+
+export const hiveUpdateBranchSchema = z.object({
+  branch: z.string().describe('Current git branch name'),
 });
 
 // ---------------------------------------------------------------------------
@@ -186,5 +191,13 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       'Mark a conflict as resolved after coordinating with the other agent or ' +
       'making a decision about how to proceed.',
     inputSchema: hiveResolveConflictSchema,
+  },
+  {
+    name: 'hive_update_branch',
+    description:
+      'Announce a git branch change. Call this after switching branches so the ' +
+      'hive mind can scope file claims correctly. Agents on different branches ' +
+      'can work on the same files without conflict.',
+    inputSchema: hiveUpdateBranchSchema,
   },
 ] as const;
