@@ -36,3 +36,7 @@ yarn-error.log*
 # Temporary
 tmp/
 temp/
+
+# Local research docs
+BRAINSTORM.md
+research/
