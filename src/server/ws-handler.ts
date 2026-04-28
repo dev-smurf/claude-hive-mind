@@ -108,7 +108,10 @@ export class WsHandler {
       }
       const token = authHeader.slice(7);
       const expected = this.config.authToken;
-      if (token.length !== expected.length || !timingSafeEqual(Buffer.from(token), Buffer.from(expected))) {
+      if (
+        token.length !== expected.length ||
+        !timingSafeEqual(Buffer.from(token), Buffer.from(expected))
+      ) {
         ws.close(4001, 'Invalid auth token');
         return;
       }
@@ -147,7 +150,11 @@ export class WsHandler {
 
       // Backpressure: skip slow clients to prevent memory exhaustion
       if (client.ws.bufferedAmount > WS_BUFFER_HIGH_WATER) {
-        console.warn('[WS] Dropping message to slow client (buffered:', client.ws.bufferedAmount, ')');
+        console.warn(
+          '[WS] Dropping message to slow client (buffered:',
+          client.ws.bufferedAmount,
+          ')',
+        );
         continue;
       }
 
