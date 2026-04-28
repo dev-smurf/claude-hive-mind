@@ -9,6 +9,9 @@
 import type { AgentId } from '../types.js';
 import { agentId } from '../schemas.js';
 
+/** Default HTTP request timeout: 30 seconds. */
+const DEFAULT_TIMEOUT_MS = 30_000;
+
 export interface ClientConfig {
   /** Base URL of the central server (e.g. "http://localhost:7777"). */
   readonly serverUrl: string;
@@ -22,6 +25,8 @@ export interface ClientConfig {
   readonly workspacePath: string;
   /** Heartbeat interval in ms. */
   readonly heartbeatIntervalMs?: number | undefined;
+  /** HTTP request timeout in ms (default: 30000). */
+  readonly timeoutMs?: number | undefined;
 }
 
 export class HiveMindClient {
@@ -100,9 +105,7 @@ export class HiveMindClient {
   }
 
   async checkFile(filePath: string): Promise<unknown> {
-    const files = (await this.get('/api/files')) as { filePath: string }[];
-    const ownership = files.find((f) => f.filePath === filePath);
-    return ownership ?? { available: true, filePath };
+    return this.get(`/api/files/check/${encodeURIComponent(filePath)}`);
   }
 
   async createTask(input: {
@@ -185,6 +188,10 @@ export class HiveMindClient {
     }
   }
 
+  private get timeoutMs(): number {
+    return this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
   private headers(): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.config.authToken) {
@@ -197,6 +204,7 @@ export class HiveMindClient {
     const res = await fetch(`${this.config.serverUrl}${path}`, {
       method: 'GET',
       headers: this.headers(),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok) {
       const body = await res.text();
@@ -210,6 +218,7 @@ export class HiveMindClient {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -222,6 +231,7 @@ export class HiveMindClient {
     const res = await fetch(`${this.config.serverUrl}${path}`, {
       method: 'DELETE',
       headers: this.headers(),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     if (!res.ok) {
       const text = await res.text();

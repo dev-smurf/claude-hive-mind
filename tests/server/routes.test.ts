@@ -164,6 +164,26 @@ describe('HTTP API', () => {
       expect(body.status).toBe('disconnected');
     });
 
+    it('unassigns orphaned tasks on agent disconnect', async () => {
+      const agent = await registerAgent(base);
+
+      // Create and assign a task
+      const createRes = await post(`${base}/api/tasks`, {
+        title: 'Orphan test',
+        description: 'Will be orphaned',
+      });
+      const task = (await createRes.json()) as { id: string };
+      await post(`${base}/api/tasks/${task.id}/assign`, { agentId: agent.id });
+
+      // Disconnect agent — task should return to pending
+      await del(`${base}/api/agents/${agent.id}`);
+
+      const taskRes = await get(`${base}/api/tasks/${task.id}`);
+      const taskBody = (await taskRes.json()) as { status: string; assignedAgentId: string | null };
+      expect(taskBody.status).toBe('pending');
+      expect(taskBody.assignedAgentId).toBeNull();
+    });
+
     it('lists connected agents', async () => {
       await registerAgent(base, 'Agent A');
       await registerAgent(base, 'Agent B');
@@ -304,6 +324,28 @@ describe('HTTP API', () => {
     it('rejects claim with missing fields', async () => {
       const res = await post(`${base}/api/files/claim`, { filePath: 'src/x.ts' });
       expect(res.status).toBe(400);
+    });
+
+    it('checks file ownership via direct endpoint (claimed)', async () => {
+      await post(`${base}/api/files/claim`, {
+        filePath: 'src/check.ts',
+        agentId: agentA.id,
+        mode: 'exclusive',
+      });
+
+      const res = await get(`${base}/api/files/check/src/check.ts`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { filePath: string; agentId: string };
+      expect(body.filePath).toBe('src/check.ts');
+      expect(body.agentId).toBe(agentA.id);
+    });
+
+    it('checks file ownership via direct endpoint (available)', async () => {
+      const res = await get(`${base}/api/files/check/src/unclaimed.ts`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { available: boolean; filePath: string };
+      expect(body.available).toBe(true);
+      expect(body.filePath).toBe('src/unclaimed.ts');
     });
   });
 

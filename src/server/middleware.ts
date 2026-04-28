@@ -2,8 +2,15 @@
  * Express middleware for authentication, rate limiting, and error handling.
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Config } from '../config.js';
+
+/** Timing-safe string comparison to prevent side-channel leaks. */
+function safeCompare(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
 
 // ---------------------------------------------------------------------------
 // Auth middleware — Bearer token validation
@@ -23,7 +30,7 @@ export function authMiddleware(config: Config): RequestHandler {
     }
 
     const token = authHeader.slice(7);
-    if (token !== config.authToken) {
+    if (!safeCompare(token, config.authToken)) {
       res.status(403).json({ error: 'Invalid auth token' });
       return;
     }

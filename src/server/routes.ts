@@ -169,6 +169,15 @@ export function createRoutes(services: RouteServices): Router {
     res.json(fileOwnership.getAllOwnerships());
   });
 
+  router.get('/api/files/check/:path(*)', (req: Request, res: Response) => {
+    const ownership = fileOwnership.getOwnership(param(req, 'path'));
+    if (ownership) {
+      res.json(ownership);
+    } else {
+      res.json({ available: true, filePath: param(req, 'path') });
+    }
+  });
+
   router.get('/api/files/agent/:id', (req: Request, res: Response) => {
     res.json(fileOwnership.getFilesByAgent(agentId(param(req, 'id'))));
   });

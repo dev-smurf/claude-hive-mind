@@ -5,15 +5,19 @@
  * When a service emits an event through the EventBus, the WS handler
  * forwards it to every connected WebSocket client.
  *
- * Clients can also send messages (heartbeats, file claims, etc.)
- * through the WebSocket for lower latency than HTTP.
+ * Auth: Clients authenticate via the Authorization header in the WS
+ * upgrade request (not URL query params, which leak in logs).
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'node:http';
 import type { EventBus } from '../services/event-bus.js';
 import type { Config } from '../config.js';
 import type { ServerMessage } from '../types.js';
+
+/** High-water mark for WS send buffer (256KB). */
+const WS_BUFFER_HIGH_WATER = 256 * 1024;
 
 export interface WsClient {
   readonly ws: WebSocket;
@@ -91,15 +95,23 @@ export class WsHandler {
   // -------------------------------------------------------------------------
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
-    // Extract agentId from query string if provided
+    // Extract agentId from query string (non-sensitive metadata)
     const url = new URL(req.url ?? '/', 'http://localhost');
     const agentIdParam = url.searchParams.get('agentId');
 
-    // Validate auth token if auth is enabled
-    const token = url.searchParams.get('token');
-    if (this.config.authEnabled && token !== this.config.authToken) {
-      ws.close(4001, 'Invalid auth token');
-      return;
+    // Auth via Authorization header in upgrade request (not URL params)
+    if (this.config.authEnabled) {
+      const authHeader = req.headers.authorization;
+      if (!authHeader?.startsWith('Bearer ')) {
+        ws.close(4001, 'Missing Authorization header');
+        return;
+      }
+      const token = authHeader.slice(7);
+      const expected = this.config.authToken;
+      if (token.length !== expected.length || !timingSafeEqual(Buffer.from(token), Buffer.from(expected))) {
+        ws.close(4001, 'Invalid auth token');
+        return;
+      }
     }
 
     const client: WsClient = {
@@ -119,22 +131,31 @@ export class WsHandler {
       this.clients.delete(client);
     });
 
-    // Send initial state sync (client can request full state via HTTP)
     ws.send(JSON.stringify({ type: 'connected', agentId: agentIdParam }));
   }
 
-  /** Broadcast a message to all connected WebSocket clients. */
+  /**
+   * Broadcast a message to all connected WebSocket clients.
+   * Skips clients whose send buffer exceeds the high-water mark
+   * to prevent unbounded memory growth from slow consumers.
+   */
   private broadcast(message: ServerMessage): void {
     const data = JSON.stringify(message);
 
     for (const client of this.clients) {
-      if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(data, (err) => {
-          if (err) {
-            console.error('[WS] Send error:', err.message);
-          }
-        });
+      if (client.ws.readyState !== WebSocket.OPEN) continue;
+
+      // Backpressure: skip slow clients to prevent memory exhaustion
+      if (client.ws.bufferedAmount > WS_BUFFER_HIGH_WATER) {
+        console.warn('[WS] Dropping message to slow client (buffered:', client.ws.bufferedAmount, ')');
+        continue;
       }
+
+      client.ws.send(data, (err) => {
+        if (err) {
+          console.error('[WS] Send error:', err.message);
+        }
+      });
     }
   }
 }

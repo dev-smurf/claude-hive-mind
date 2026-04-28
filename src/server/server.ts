@@ -46,6 +46,9 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   const decisions = new DecisionLog(store, bus);
   const conflicts = new ConflictDetector(store, bus);
 
+  // Wire cross-service dependency (avoids circular import)
+  registry.setTaskQueue(taskQueue);
+
   // -------------------------------------------------------------------------
   // Express app
   // -------------------------------------------------------------------------

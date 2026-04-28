@@ -102,25 +102,28 @@ export class TaskQueue {
    * Assign a task to an agent.
    *
    * The task must be 'pending' and have all dependencies satisfied
-   * (completed). Returns the updated task or null if assignment fails.
+   * (completed). Wrapped in a transaction to prevent two agents
+   * from racing to assign the same task.
    */
   assign(id: TaskId, agentId: AgentId): Task | null {
-    const task = this.store.getTask(id);
-    if (!task) return null;
-    if (task.status !== 'pending') return null;
+    return this.store.transaction(() => {
+      const task = this.store.getTask(id);
+      if (!task) return null;
+      if (task.status !== 'pending') return null;
 
-    // Check dependencies are satisfied
-    if (!this.areDependenciesMet(task)) return null;
+      // Check dependencies are satisfied
+      if (!this.areDependenciesMet(task)) return null;
 
-    const now = isoTimestamp();
-    this.store.assignTask(id, agentId, now);
+      const now = isoTimestamp();
+      this.store.assignTask(id, agentId, now);
 
-    const updated = this.store.getTask(id);
-    if (updated) {
-      this.bus.emit({ type: 'task_updated', task: updated });
-    }
+      const updated = this.store.getTask(id);
+      if (updated) {
+        this.bus.emit({ type: 'task_updated', task: updated });
+      }
 
-    return updated ?? null;
+      return updated ?? null;
+    });
   }
 
   /**
@@ -128,19 +131,21 @@ export class TaskQueue {
    * Returns the task to 'pending' status so another agent can claim it.
    */
   unassign(id: TaskId): Task | null {
-    const task = this.store.getTask(id);
-    if (!task) return null;
-    if (task.status !== 'in_progress') return null;
+    return this.store.transaction(() => {
+      const task = this.store.getTask(id);
+      if (!task) return null;
+      if (task.status !== 'in_progress') return null;
 
-    const now = isoTimestamp();
-    this.store.unassignTask(id, now);
+      const now = isoTimestamp();
+      this.store.unassignTask(id, now);
 
-    const updated = this.store.getTask(id);
-    if (updated) {
-      this.bus.emit({ type: 'task_updated', task: updated });
-    }
+      const updated = this.store.getTask(id);
+      if (updated) {
+        this.bus.emit({ type: 'task_updated', task: updated });
+      }
 
-    return updated ?? null;
+      return updated ?? null;
+    });
   }
 
   /**
@@ -164,19 +169,21 @@ export class TaskQueue {
    * Pending or in_progress tasks can be cancelled.
    */
   cancel(id: TaskId): Task | null {
-    const task = this.store.getTask(id);
-    if (!task) return null;
-    if (task.status !== 'pending' && task.status !== 'in_progress') return null;
+    return this.store.transaction(() => {
+      const task = this.store.getTask(id);
+      if (!task) return null;
+      if (task.status !== 'pending' && task.status !== 'in_progress') return null;
 
-    const now = isoTimestamp();
-    this.store.updateTaskStatus(id, 'cancelled', now);
+      const now = isoTimestamp();
+      this.store.updateTaskStatus(id, 'cancelled', now);
 
-    const updated = this.store.getTask(id);
-    if (updated) {
-      this.bus.emit({ type: 'task_updated', task: updated });
-    }
+      const updated = this.store.getTask(id);
+      if (updated) {
+        this.bus.emit({ type: 'task_updated', task: updated });
+      }
 
-    return updated ?? null;
+      return updated ?? null;
+    });
   }
 
   /**
@@ -212,6 +219,23 @@ export class TaskQueue {
     return this.store.getTasksByStatus(status);
   }
 
+  /**
+   * Unassign all in_progress tasks held by a specific agent.
+   * Used when an agent disconnects to prevent orphaned tasks.
+   * Returns the number of tasks unassigned.
+   */
+  unassignByAgent(agentId: AgentId): number {
+    const allTasks = this.store.getAllTasks();
+    let count = 0;
+    for (const task of allTasks) {
+      if (task.status === 'in_progress' && task.assignedAgentId === agentId) {
+        this.unassign(task.id);
+        count++;
+      }
+    }
+    return count;
+  }
+
   /** Delete a task permanently. */
   delete(id: TaskId): boolean {
     const task = this.store.getTask(id);
@@ -241,21 +265,23 @@ export class TaskQueue {
 
   /**
    * Generic status transition with validation.
-   * Returns the updated task or null if the transition is invalid.
+   * Wrapped in a transaction to prevent concurrent state corruption.
    */
   private transition(id: TaskId, requiredStatus: TaskStatus, newStatus: TaskStatus): Task | null {
-    const task = this.store.getTask(id);
-    if (!task) return null;
-    if (task.status !== requiredStatus) return null;
+    return this.store.transaction(() => {
+      const task = this.store.getTask(id);
+      if (!task) return null;
+      if (task.status !== requiredStatus) return null;
 
-    const now = isoTimestamp();
-    this.store.updateTaskStatus(id, newStatus, now);
+      const now = isoTimestamp();
+      this.store.updateTaskStatus(id, newStatus, now);
 
-    const updated = this.store.getTask(id);
-    if (updated) {
-      this.bus.emit({ type: 'task_updated', task: updated });
-    }
+      const updated = this.store.getTask(id);
+      if (updated) {
+        this.bus.emit({ type: 'task_updated', task: updated });
+      }
 
-    return updated ?? null;
+      return updated ?? null;
+    });
   }
 }

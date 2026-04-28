@@ -77,51 +77,53 @@ export class FileOwnershipService {
    * If no conflicting ownership exists, the claim is granted immediately.
    * If a conflict is detected, it's recorded and the claim is denied.
    *
-   * Returns a result indicating success/failure and any conflict details.
+   * The entire check-then-write is wrapped in a SQLite transaction to
+   * prevent TOCTOU races under concurrent requests.
    */
   claim(input: ClaimInput): ClaimResult {
-    const existing = this.store.getFileOwnership(input.filePath);
+    return this.store.transaction(() => {
+      const existing = this.store.getFileOwnership(input.filePath);
 
-    // If someone else already holds this file, check for conflicts
-    if (existing && existing.agentId !== input.agentId) {
-      const conflict = this.detectConflict(existing, input);
-      if (conflict) {
-        this.store.insertConflict(conflict);
-        this.bus.emit({ type: 'conflict_detected', conflict });
-        return { granted: false, ownership: null, conflict };
+      // If someone else already holds this file, check for conflicts
+      if (existing && existing.agentId !== input.agentId) {
+        const conflict = this.detectConflict(existing, input);
+        if (conflict) {
+          this.store.insertConflict(conflict);
+          this.bus.emit({ type: 'conflict_detected', conflict });
+          return { granted: false, ownership: null, conflict };
+        }
       }
-    }
 
-    // Build the ownership record
-    const now = isoTimestamp();
-    const ttlMs = input.ttlMs === undefined ? this.config.defaultClaimTtlMs : input.ttlMs;
-    const expiresAt =
-      ttlMs != null && ttlMs > 0 ? isoTimestamp(new Date(Date.now() + ttlMs)) : null;
+      // Check per-agent claim limit
+      const currentCount = this.store.countFilesByAgent(input.agentId);
+      if (currentCount >= this.config.maxClaimsPerAgent) {
+        this.bus.emit({
+          type: 'error',
+          message: `Agent ${input.agentId} exceeded max file claims (${String(this.config.maxClaimsPerAgent)})`,
+        });
+        return { granted: false, ownership: null, conflict: null };
+      }
 
-    const ownership: FileOwnership = {
-      filePath: input.filePath,
-      agentId: input.agentId,
-      mode: input.mode,
-      taskId: input.taskId ?? null,
-      claimedAt: now,
-      expiresAt,
-    };
+      // Build the ownership record
+      const now = isoTimestamp();
+      const ttlMs = input.ttlMs === undefined ? this.config.defaultClaimTtlMs : input.ttlMs;
+      const expiresAt =
+        ttlMs != null && ttlMs > 0 ? isoTimestamp(new Date(Date.now() + ttlMs)) : null;
 
-    // Check per-agent claim limit
-    const currentCount = this.store.countFilesByAgent(input.agentId);
-    if (currentCount >= this.config.maxClaimsPerAgent) {
-      // Don't create a conflict — just deny with an error event
-      this.bus.emit({
-        type: 'error',
-        message: `Agent ${input.agentId} exceeded max file claims (${String(this.config.maxClaimsPerAgent)})`,
-      });
-      return { granted: false, ownership: null, conflict: null };
-    }
+      const ownership: FileOwnership = {
+        filePath: input.filePath,
+        agentId: input.agentId,
+        mode: input.mode,
+        taskId: input.taskId ?? null,
+        claimedAt: now,
+        expiresAt,
+      };
 
-    this.store.upsertFileOwnership(ownership);
-    this.bus.emit({ type: 'file_claimed', ownership });
+      this.store.upsertFileOwnership(ownership);
+      this.bus.emit({ type: 'file_claimed', ownership });
 
-    return { granted: true, ownership, conflict: null };
+      return { granted: true, ownership, conflict: null };
+    });
   }
 
   /**

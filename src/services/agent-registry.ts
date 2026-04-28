@@ -23,6 +23,7 @@ import { agentId, isoTimestamp } from '../schemas.js';
 import type { Config } from '../config.js';
 import type { Store } from './store.js';
 import type { EventBus } from './event-bus.js';
+import type { TaskQueue } from './task-queue.js';
 
 export interface RegisterInput {
   readonly displayName: string;
@@ -34,12 +35,21 @@ export class AgentRegistry {
   private readonly store: Store;
   private readonly bus: EventBus;
   private readonly config: Config;
+  private taskQueue: TaskQueue | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(store: Store, bus: EventBus, config: Config) {
     this.store = store;
     this.bus = bus;
     this.config = config;
+  }
+
+  /**
+   * Set the task queue reference for orphaned task cleanup on disconnect.
+   * Called after construction to avoid circular dependency.
+   */
+  setTaskQueue(taskQueue: TaskQueue): void {
+    this.taskQueue = taskQueue;
   }
 
   /**
@@ -116,8 +126,9 @@ export class AgentRegistry {
    * Disconnect an agent gracefully.
    *
    * Sets status to 'disconnected', releases all file claims,
-   * and broadcasts the departure. The agent record is kept
-   * for history — stale cleanup will eventually remove it.
+   * unassigns any in_progress tasks (prevents orphans), and
+   * broadcasts the departure. The agent record is kept for
+   * history — stale cleanup will eventually remove it.
    */
   disconnect(id: AgentId): boolean {
     const agent = this.store.getAgent(id);
@@ -126,6 +137,11 @@ export class AgentRegistry {
     this.store.updateAgentStatus(id, 'disconnected');
     this.store.updateAgentTask(id, null);
     this.store.deleteFilesByAgent(id);
+
+    // Unassign orphaned tasks so other agents can pick them up
+    if (this.taskQueue) {
+      this.taskQueue.unassignByAgent(id);
+    }
 
     this.bus.emit({ type: 'agent_left', agentId: id });
     return true;
