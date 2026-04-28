@@ -36,7 +36,8 @@ export interface RouteServices {
 /** Safely extract a route param as a string. */
 function param(req: Request, name: string): string {
   const v = req.params[name];
-  return Array.isArray(v) ? (v[0] ?? '') : (v ?? '');
+  if (Array.isArray(v)) return v.join('/');
+  return v ?? '';
 }
 
 /** Safely extract a query param as a string. */
@@ -150,7 +151,7 @@ export function createRoutes(services: RouteServices): Router {
     }
   });
 
-  router.delete('/api/files/:path(*)', (req: Request, res: Response) => {
+  router.delete('/api/files/{*path}', (req: Request, res: Response) => {
     const aid = queryParam(req, 'agentId');
     if (!aid) {
       res.status(400).json({ error: 'Missing query parameter: agentId' });
@@ -169,7 +170,7 @@ export function createRoutes(services: RouteServices): Router {
     res.json(fileOwnership.getAllOwnerships());
   });
 
-  router.get('/api/files/check/:path(*)', (req: Request, res: Response) => {
+  router.get('/api/files/check/{*path}', (req: Request, res: Response) => {
     const ownership = fileOwnership.getOwnership(param(req, 'path'));
     if (ownership) {
       res.json(ownership);
@@ -334,7 +335,7 @@ export function createRoutes(services: RouteServices): Router {
     res.json(knowledge.getAll());
   });
 
-  router.get('/api/knowledge/:key(*)', (req: Request, res: Response) => {
+  router.get('/api/knowledge/{*key}', (req: Request, res: Response) => {
     const entry = knowledge.get(param(req, 'key'));
     if (!entry) {
       res.status(404).json({ error: 'Knowledge entry not found' });
@@ -343,7 +344,7 @@ export function createRoutes(services: RouteServices): Router {
     res.json(entry);
   });
 
-  router.delete('/api/knowledge/:key(*)', (req: Request, res: Response) => {
+  router.delete('/api/knowledge/{*key}', (req: Request, res: Response) => {
     const ok = knowledge.delete(param(req, 'key'));
     if (!ok) {
       res.status(404).json({ error: 'Knowledge entry not found' });

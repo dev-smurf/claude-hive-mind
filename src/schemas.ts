@@ -21,7 +21,7 @@ import { z } from 'zod';
 const nonEmptyString = z.string().trim().min(1);
 
 /** Validates an ISO 8601 timestamp string. */
-export const isoTimestampSchema = z.string().datetime();
+export const isoTimestampSchema = z.iso.datetime();
 
 // ---------------------------------------------------------------------------
 // Enums (string literal unions)
