@@ -9,7 +9,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "chm": "dist/cli/index.js"
+    "claude-hive-mind": "dist/cli.js",
+    "chm": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
