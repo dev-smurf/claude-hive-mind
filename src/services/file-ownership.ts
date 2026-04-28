@@ -91,10 +91,7 @@ export class FileOwnershipService {
 
       for (const existing of existingClaims) {
         // Skip claims by the same agent on the same branch (re-claim)
-        if (
-          existing.agentId === input.agentId &&
-          existing.branch === requestBranch
-        ) {
+        if (existing.agentId === input.agentId && existing.branch === requestBranch) {
           continue;
         }
 
@@ -177,7 +174,12 @@ export class FileOwnershipService {
    * Check if a file is available for a given agent and mode.
    * Does not create a claim — just queries the current state.
    */
-  isAvailable(filePath: string, agentId: AgentId, mode: OwnershipMode, branch?: string | null): boolean {
+  isAvailable(
+    filePath: string,
+    agentId: AgentId,
+    mode: OwnershipMode,
+    branch?: string | null,
+  ): boolean {
     const requestBranch = branch ?? null;
     const existingClaims = this.store.getFileOwnershipsByPath(filePath);
 

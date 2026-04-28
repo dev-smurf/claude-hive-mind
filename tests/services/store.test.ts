@@ -157,7 +157,9 @@ describe('file ownership', () => {
   it('deletes a specific file claim', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
     store.deleteFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch);
-    expect(store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch)).toBeUndefined();
+    expect(
+      store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath, OWNERSHIP_EXCLUSIVE.branch),
+    ).toBeUndefined();
   });
 
   it('deletes all files by agent', () => {

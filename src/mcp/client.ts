@@ -55,7 +55,9 @@ export class HiveMindClient {
       displayName: this.config.displayName,
       tool: this.config.tool,
       workspacePath: this.config.workspacePath,
-      ...(this.config.currentBranch !== undefined ? { currentBranch: this.config.currentBranch } : {}),
+      ...(this.config.currentBranch !== undefined
+        ? { currentBranch: this.config.currentBranch }
+        : {}),
       ...(this.config.repoUrl !== undefined ? { repoUrl: this.config.repoUrl } : {}),
     });
 
@@ -95,7 +97,12 @@ export class HiveMindClient {
     return this.get('/api/status');
   }
 
-  async claimFile(filePath: string, mode: string, taskIdVal?: string, branch?: string): Promise<unknown> {
+  async claimFile(
+    filePath: string,
+    mode: string,
+    taskIdVal?: string,
+    branch?: string,
+  ): Promise<unknown> {
     return this.post('/api/files/claim', {
       filePath,
       agentId: this.requireAgentId(),

@@ -18,7 +18,10 @@ export const hiveClaimFileSchema = z.object({
   filePath: z.string().describe('Path to the file to claim (repo-relative or absolute)'),
   mode: z.enum(['exclusive', 'shared']).describe('Exclusive lock or shared access'),
   taskId: z.string().optional().describe('Associated task ID'),
-  branch: z.string().optional().describe('Git branch for this claim (enables branch-aware conflict detection)'),
+  branch: z
+    .string()
+    .optional()
+    .describe('Git branch for this claim (enables branch-aware conflict detection)'),
 });
 
 export const hiveReleaseFileSchema = z.object({

@@ -443,8 +443,8 @@ describe('HTTP API', () => {
       const conflictsRes = await get(`${base}/api/conflicts?unresolved=true`);
       const conflictsList = (await conflictsRes.json()) as unknown[];
       // No conflicts should be created for different-branch claims
-      const fileConflicts = (conflictsList as { filePaths?: string[] }[]).filter(
-        (c) => c.filePaths?.includes('src/isolated.ts'),
+      const fileConflicts = (conflictsList as { filePaths?: string[] }[]).filter((c) =>
+        c.filePaths?.includes('src/isolated.ts'),
       );
       expect(fileConflicts).toHaveLength(0);
     });
