@@ -21,8 +21,8 @@
     "lint": "eslint src/ tests/ --no-error-on-unmatched-pattern",
     "lint:fix": "eslint src/ tests/ --fix --no-error-on-unmatched-pattern",
     "typecheck": "tsc --noEmit",
-    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format": "prettier --write \"{src,tests}/**/*.ts\"",
+    "format:check": "prettier --check \"{src,tests}/**/*.ts\"",
     "clean": "rm -rf dist coverage"
   },
   "keywords": [
