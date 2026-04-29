@@ -1020,6 +1020,184 @@ describe('HTTP API', () => {
       );
       expect(res.status).toBe(403);
     });
+
+    it('rejects Authorization header without Bearer prefix', async () => {
+      const res = await fetch(`${authedBase}/api/agents`, {
+        headers: { Authorization: 'secret-123' },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('admin token can mutate any agent', async () => {
+      const regRes = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'AdminTarget', tool: 'claude-code', workspacePath: '/x' },
+        'secret-123',
+      );
+      const a = (await regRes.json()) as { id: string };
+      const hbRes = await post(`${authedBase}/api/agents/${a.id}/heartbeat`, {}, 'secret-123');
+      expect(hbRes.status).toBe(200);
+    });
+
+    it('agent cannot complete another agents task', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A3', tool: 'claude-code', workspacePath: '/a' },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+      const regB = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B3', tool: 'claude-code', workspacePath: '/b' },
+        'secret-123',
+      );
+      const b = (await regB.json()) as { id: string; agentToken: string };
+
+      const tRes = await post(
+        `${authedBase}/api/tasks`,
+        { title: 't', description: 'd' },
+        'secret-123',
+      );
+      const t = (await tRes.json()) as { id: string };
+
+      // Assign to B
+      await post(`${authedBase}/api/tasks/${t.id}/assign`, { agentId: b.id }, b.agentToken);
+
+      // A tries to complete B's task → 403
+      const res = await post(`${authedBase}/api/tasks/${t.id}/complete`, {}, a.agentToken);
+      expect(res.status).toBe(403);
+    });
+
+    it('agent cannot delete another agents knowledge', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A4', tool: 'claude-code', workspacePath: '/a' },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+      const regB = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B4', tool: 'claude-code', workspacePath: '/b' },
+        'secret-123',
+      );
+      const b = (await regB.json()) as { id: string; agentToken: string };
+
+      // B shares knowledge
+      await post(
+        `${authedBase}/api/knowledge`,
+        { key: 'b-secret', value: 'sensitive', agentId: b.id },
+        b.agentToken,
+      );
+
+      // A tries to delete it → 403
+      const res = await fetch(`${authedBase}/api/knowledge/b-secret`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${a.agentToken}` },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('agent cannot delete tasks (admin only)', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A5', tool: 'claude-code', workspacePath: '/a' },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+
+      const tRes = await post(
+        `${authedBase}/api/tasks`,
+        { title: 't', description: 'd' },
+        'secret-123',
+      );
+      const t = (await tRes.json()) as { id: string };
+
+      const res = await fetch(`${authedBase}/api/tasks/${t.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${a.agentToken}` },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it('agent cannot see other agents workspacePath/repoUrl', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        {
+          displayName: 'A6',
+          tool: 'claude-code',
+          workspacePath: '/secret-workspace',
+          repoUrl: 'https://github.com/secret/repo',
+        },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+      const regB = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B6', tool: 'claude-code', workspacePath: '/b' },
+        'secret-123',
+      );
+      const b = (await regB.json()) as { id: string; agentToken: string };
+
+      // B requests A's record
+      const aDetail = await get(`${authedBase}/api/agents/${a.id}`, b.agentToken);
+      const body = (await aDetail.json()) as Record<string, unknown>;
+      expect(body.workspacePath).toBeUndefined();
+      expect(body.repoUrl).toBeUndefined();
+    });
+
+    it('agent CAN see its own workspacePath/repoUrl', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Self', tool: 'claude-code', workspacePath: '/self' },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+
+      const detail = await get(`${authedBase}/api/agents/${a.id}`, a.agentToken);
+      const body = (await detail.json()) as Record<string, unknown>;
+      expect(body.workspacePath).toBe('/self');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // State cache behavior
+  // -----------------------------------------------------------------------
+
+  describe('State cache', () => {
+    it('returns cached state on second call within 1s', async () => {
+      const r1 = await get(`${base}/api/state`);
+      const b1 = (await r1.json()) as { tasks: unknown[] };
+      // Insert a task between calls — cached body should not reflect it.
+      await post(`${base}/api/tasks`, { title: 'New', description: 'desc' });
+      const r2 = await get(`${base}/api/state`);
+      const b2 = (await r2.json()) as { tasks: unknown[] };
+      expect(b2.tasks.length).toBe(b1.tasks.length);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Length-cap enforcement
+  // -----------------------------------------------------------------------
+
+  describe('Length caps', () => {
+    it('rejects displayName exceeding short-name cap', async () => {
+      const res = await post(`${base}/api/agents/register`, {
+        displayName: 'A'.repeat(201),
+        tool: 'claude-code',
+        workspacePath: '/x',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects oversized knowledge value', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/knowledge`, {
+        key: 'huge',
+        value: 'x'.repeat(100_001),
+        agentId: a.id,
+      });
+      expect(res.status).toBe(400);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -1063,6 +1241,33 @@ describe('HTTP API', () => {
     it('rejects null bytes in path', async () => {
       const res = await post(`${base}/api/files/claim`, {
         filePath: 'safe.ts\0evil',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects UNC / network paths', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: '//srv/share/file.ts',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects Windows drive-letter paths', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: 'C:\\Windows\\System32\\evil',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects oversized paths', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: 'a'.repeat(2000),
         agentId: agent.id,
         mode: 'exclusive',
       });

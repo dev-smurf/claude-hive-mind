@@ -9,7 +9,6 @@
  * upgrade request (not URL query params, which leak in logs).
  */
 
-import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'node:http';
 import type { EventBus } from '../services/event-bus.js';
@@ -17,6 +16,7 @@ import type { Config } from '../config.js';
 import type { ServerMessage } from '../types.js';
 import type { AgentRegistry } from '../services/agent-registry.js';
 import { logger } from '../util/logger.js';
+import { safeCompare } from './middleware.js';
 
 /** High-water mark for WS send buffer (256KB). */
 const WS_BUFFER_HIGH_WATER = 256 * 1024;
@@ -114,11 +114,7 @@ export class WsHandler {
         return;
       }
       const token = authHeader.slice(7);
-      const expected = this.config.authToken;
-
-      const isAdmin =
-        token.length === expected.length &&
-        timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+      const isAdmin = safeCompare(token, this.config.authToken);
 
       if (!isAdmin) {
         const agent = this.registry.getAgentByToken(token);
@@ -175,7 +171,13 @@ export class WsHandler {
 
       client.ws.send(data, (err) => {
         if (err) {
-          logger.warn('ws', 'Send error', { error: err.message });
+          logger.warn('ws', 'Send error — dropping client', { error: err.message });
+          this.clients.delete(client);
+          try {
+            client.ws.terminate();
+          } catch {
+            // already terminated
+          }
         }
       });
     }

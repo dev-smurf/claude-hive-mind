@@ -30,9 +30,9 @@ import {
   shareKnowledgeBodySchema,
   logDecisionBodySchema,
 } from '../schemas.js';
-import type { TaskId } from '../types.js';
+import type { AgentRecord, TaskId } from '../types.js';
 import { InvalidPathError } from '../util/path-normalize.js';
-import { requireAgentMatch } from './middleware.js';
+import { isAdmin, requireAdmin, requireAgentMatch, requireOwnerOrAdmin } from './middleware.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,13 +86,22 @@ function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | nu
 }
 
 /**
- * Wrap a sync route handler so InvalidPathError becomes 400 instead of 500.
- * Other thrown errors propagate to the global error handler.
+ * Wrap a route handler (sync or async) so InvalidPathError becomes 400
+ * instead of 500. Other thrown errors propagate to the global error handler.
  */
-function safe(handler: (req: Request, res: Response) => void) {
+function safe(handler: (req: Request, res: Response) => void | Promise<void>) {
   return (req: Request, res: Response): void => {
     try {
-      handler(req, res);
+      const r = handler(req, res);
+      if (r && typeof r === 'object' && 'catch' in r) {
+        void r.catch((err: unknown) => {
+          if (err instanceof InvalidPathError) {
+            res.status(400).json({ error: err.message });
+            return;
+          }
+          throw err;
+        });
+      }
     } catch (err) {
       if (err instanceof InvalidPathError) {
         res.status(400).json({ error: err.message });
@@ -101,6 +110,21 @@ function safe(handler: (req: Request, res: Response) => void) {
       throw err;
     }
   };
+}
+
+/** Public-facing fields that admin tokens see but agent tokens do not. */
+type PublicAgent = Omit<AgentRecord, 'workspacePath' | 'repoUrl'>;
+
+/**
+ * Strip workspace_path and repo_url from an agent record when the caller is
+ * not an admin. Agents do not need each other's filesystem layout.
+ */
+function sanitizeAgent(req: Request, agent: AgentRecord): AgentRecord | PublicAgent {
+  if (isAdmin(req)) return agent;
+  // Agent can see its own full record.
+  if (req.auth?.authenticatedAgentId === agent.id) return agent;
+  const { workspacePath: _w, repoUrl: _r, ...rest } = agent;
+  return rest;
 }
 
 // ---------------------------------------------------------------------------
@@ -122,7 +146,8 @@ export function createRoutes(services: RouteServices): Router {
   const router = Router();
   const { registry, fileOwnership, taskQueue, knowledge, decisions, conflicts } = services;
 
-  let stateCache: StateCache | null = null;
+  // Per-auth-context cache so admin-only data never leaks to agent tokens.
+  const stateCache = new Map<string, StateCache>();
 
   // -------------------------------------------------------------------------
   // Agents
@@ -184,8 +209,9 @@ export function createRoutes(services: RouteServices): Router {
     res.json({ ok: true });
   });
 
-  router.get('/api/agents', (_req: Request, res: Response) => {
-    res.json(registry.getConnectedAgents());
+  router.get('/api/agents', (req: Request, res: Response) => {
+    const agents = registry.getConnectedAgents();
+    res.json(agents.map((a) => sanitizeAgent(req, a)));
   });
 
   router.get('/api/agents/:id', (req: Request, res: Response) => {
@@ -194,7 +220,7 @@ export function createRoutes(services: RouteServices): Router {
       res.status(404).json({ error: 'Agent not found' });
       return;
     }
-    res.json(agent);
+    res.json(sanitizeAgent(req, agent));
   });
 
   // -------------------------------------------------------------------------
@@ -299,7 +325,15 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/tasks/:id/unassign', (req: Request, res: Response) => {
-    const task = taskQueue.unassign(taskId(param(req, 'id')));
+    const tid = taskId(param(req, 'id'));
+    const existing = taskQueue.getTask(tid);
+    if (!existing) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    if (!requireOwnerOrAdmin(req, res, existing.assignedAgentId)) return;
+
+    const task = taskQueue.unassign(tid);
     if (!task) {
       res.status(409).json({ error: 'Cannot unassign task (not in_progress)' });
       return;
@@ -308,7 +342,15 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/tasks/:id/complete', (req: Request, res: Response) => {
-    const task = taskQueue.complete(taskId(param(req, 'id')));
+    const tid = taskId(param(req, 'id'));
+    const existing = taskQueue.getTask(tid);
+    if (!existing) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    if (!requireOwnerOrAdmin(req, res, existing.assignedAgentId)) return;
+
+    const task = taskQueue.complete(tid);
     if (!task) {
       res.status(409).json({ error: 'Cannot complete task (not in_progress)' });
       return;
@@ -317,7 +359,15 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/tasks/:id/fail', (req: Request, res: Response) => {
-    const task = taskQueue.fail(taskId(param(req, 'id')));
+    const tid = taskId(param(req, 'id'));
+    const existing = taskQueue.getTask(tid);
+    if (!existing) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    if (!requireOwnerOrAdmin(req, res, existing.assignedAgentId)) return;
+
+    const task = taskQueue.fail(tid);
     if (!task) {
       res.status(409).json({ error: 'Cannot fail task (not in_progress)' });
       return;
@@ -326,7 +376,16 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/tasks/:id/cancel', (req: Request, res: Response) => {
-    const task = taskQueue.cancel(taskId(param(req, 'id')));
+    const tid = taskId(param(req, 'id'));
+    const existing = taskQueue.getTask(tid);
+    if (!existing) {
+      res.status(404).json({ error: 'Task not found' });
+      return;
+    }
+    // Cancellation is allowed by the assigned agent OR by an admin.
+    if (!requireOwnerOrAdmin(req, res, existing.assignedAgentId)) return;
+
+    const task = taskQueue.cancel(tid);
     if (!task) {
       res.status(409).json({ error: 'Cannot cancel task' });
       return;
@@ -357,6 +416,7 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.delete('/api/tasks/:id', (req: Request, res: Response) => {
+    if (!requireAdmin(req, res)) return;
     const ok = taskQueue.delete(taskId(param(req, 'id')));
     if (!ok) {
       res.status(404).json({ error: 'Task not found' });
@@ -399,7 +459,15 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.delete('/api/knowledge/{*key}', (req: Request, res: Response) => {
-    const ok = knowledge.delete(param(req, 'key'));
+    const key = param(req, 'key');
+    const existing = knowledge.get(key);
+    if (!existing) {
+      res.status(404).json({ error: 'Knowledge entry not found' });
+      return;
+    }
+    if (!requireOwnerOrAdmin(req, res, existing.agentId)) return;
+
+    const ok = knowledge.delete(key);
     if (!ok) {
       res.status(404).json({ error: 'Knowledge entry not found' });
       return;
@@ -446,9 +514,26 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/conflicts/:id/resolve', (req: Request, res: Response) => {
-    const ok = conflicts.resolve(conflictId(param(req, 'id')));
+    const cid = conflictId(param(req, 'id'));
+    const existing = conflicts.get(cid);
+    if (!existing) {
+      res.status(404).json({ error: 'Conflict not found' });
+      return;
+    }
+    // Either party of the conflict, or an admin, may resolve it.
+    const auth = req.auth;
+    const callerIsParty =
+      auth?.authMode === 'agent' &&
+      (auth.authenticatedAgentId === existing.agentA ||
+        auth.authenticatedAgentId === existing.agentB);
+    if (!isAdmin(req) && !callerIsParty) {
+      res.status(403).json({ error: 'Token does not authorize this operation' });
+      return;
+    }
+
+    const ok = conflicts.resolve(cid);
     if (!ok) {
-      res.status(404).json({ error: 'Conflict not found or already resolved' });
+      res.status(409).json({ error: 'Conflict already resolved' });
       return;
     }
     res.json({ ok: true });
@@ -476,22 +561,27 @@ export function createRoutes(services: RouteServices): Router {
     });
   });
 
-  router.get('/api/state', (_req: Request, res: Response) => {
+  router.get('/api/state', (req: Request, res: Response) => {
+    // Cache is per-context: admin gets full data, agents get sanitized data.
+    // The cache is keyed by 'admin' or the authenticated agent ID.
+    const auth = req.auth;
+    const cacheKey: string = isAdmin(req) ? 'admin' : (auth?.authenticatedAgentId ?? 'anonymous');
     const now = Date.now();
-    if (stateCache && now - stateCache.generatedAt < STATE_CACHE_TTL_MS) {
-      res.type('application/json').send(stateCache.body);
+    const cached = stateCache.get(cacheKey);
+    if (cached && now - cached.generatedAt < STATE_CACHE_TTL_MS) {
+      res.type('application/json').send(cached.body);
       return;
     }
 
     const body = JSON.stringify({
-      agents: registry.getAllAgents(),
+      agents: registry.getAllAgents().map((a) => sanitizeAgent(req, a)),
       fileOwnerships: fileOwnership.getAllOwnerships(),
       tasks: taskQueue.getAllTasks(),
       knowledge: knowledge.getAll(),
       decisions: decisions.getAll(),
       conflicts: conflicts.getAll(),
     });
-    stateCache = { generatedAt: now, body };
+    stateCache.set(cacheKey, { generatedAt: now, body });
     res.type('application/json').send(body);
   });
 

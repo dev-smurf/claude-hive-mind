@@ -131,12 +131,35 @@ interface ConflictRow {
  * drift and throw — the row converter sits at the storage→domain
  * boundary, so corruption here must surface immediately.
  */
-function parseEnum<T>(schema: { parse: (val: unknown) => T }, value: string, field: string): T {
+function parseEnum<T extends string>(
+  schema: { parse: (val: unknown) => T },
+  value: string,
+  field: string,
+): T {
   try {
     return schema.parse(value);
   } catch {
     logger.error('store', `Invalid ${field} value in DB row`, { value, field });
     throw new Error(`Invalid ${field} value in DB: "${value}"`);
+  }
+}
+
+/**
+ * Safely parse a JSON column. On parse failure, logs the corruption and
+ * substitutes a fallback so a single bad row cannot brick reads of the
+ * whole table.
+ */
+function parseJsonArray(raw: string, table: string, rowId: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as string[]) : [];
+  } catch {
+    logger.error('store', 'Corrupt JSON column — substituting empty array', {
+      table,
+      rowId,
+      raw,
+    });
+    return [];
   }
 }
 
@@ -175,8 +198,8 @@ function rowToTask(row: TaskRow): Task {
     assignedAgentId: row.assigned_agent_id ? agentId(row.assigned_agent_id) : null,
     status: parseEnum<TaskStatus>(taskStatusSchema, row.status, 'task.status'),
     priority: parseEnum<TaskPriority>(taskPrioritySchema, row.priority, 'task.priority'),
-    filePaths: JSON.parse(row.file_paths) as string[],
-    dependsOn: (JSON.parse(row.depends_on) as string[]).map(taskId),
+    filePaths: parseJsonArray(row.file_paths, 'tasks.file_paths', row.id),
+    dependsOn: parseJsonArray(row.depends_on, 'tasks.depends_on', row.id).map(taskId),
     createdAt: row.created_at as ISOTimestamp,
     updatedAt: row.updated_at as ISOTimestamp,
   };
@@ -219,7 +242,7 @@ function rowToConflict(row: ConflictRow): Conflict {
     ),
     agentA: agentId(row.agent_a),
     agentB: agentId(row.agent_b),
-    filePaths: JSON.parse(row.file_paths) as string[],
+    filePaths: parseJsonArray(row.file_paths, 'conflicts.file_paths', row.id),
     description: row.description,
     resolved: row.resolved === 1,
     detectedAt: row.detected_at as ISOTimestamp,
@@ -324,15 +347,19 @@ function runMigrations(db: BetterSqlite3.Database): void {
   const cols = db.prepare('PRAGMA table_info(agents)').all() as { name: string }[];
   const colNames = new Set(cols.map((c) => c.name));
 
-  if (!colNames.has('current_branch')) {
-    db.exec('ALTER TABLE agents ADD COLUMN current_branch TEXT');
-  }
-  if (!colNames.has('repo_url')) {
-    db.exec('ALTER TABLE agents ADD COLUMN repo_url TEXT');
-  }
-  if (!colNames.has('agent_token')) {
-    db.exec("ALTER TABLE agents ADD COLUMN agent_token TEXT NOT NULL DEFAULT ''");
-  }
+  // Wrap all schema changes in a single transaction so a torn migration
+  // (process kill, disk full) cannot leave the schema partially applied.
+  db.transaction(() => {
+    if (!colNames.has('current_branch')) {
+      db.exec('ALTER TABLE agents ADD COLUMN current_branch TEXT');
+    }
+    if (!colNames.has('repo_url')) {
+      db.exec('ALTER TABLE agents ADD COLUMN repo_url TEXT');
+    }
+    if (!colNames.has('agent_token')) {
+      db.exec("ALTER TABLE agents ADD COLUMN agent_token TEXT NOT NULL DEFAULT ''");
+    }
+  })();
 }
 
 // ---------------------------------------------------------------------------
@@ -428,12 +455,20 @@ export class Store {
   /**
    * Look up an agent by their auth token. Used by the auth middleware
    * to map an incoming Bearer token to an agent identity.
+   *
+   * Selects explicit columns (not `*`) so the agent_token column never
+   * accidentally rides along into a serialized response.
    */
   getAgentByToken(token: string): AgentRecord | undefined {
     if (!token) return undefined;
     const row = this.db
-      .prepare('SELECT * FROM agents WHERE agent_token = ? AND agent_token != ?')
-      .get(token, '') as AgentRow | undefined;
+      .prepare(
+        `SELECT id, display_name, tool, status, current_task_id, last_heartbeat,
+                connected_at, workspace_path, current_branch, repo_url, '' as agent_token
+         FROM agents
+         WHERE agent_token = ? AND agent_token != ''`,
+      )
+      .get(token) as AgentRow | undefined;
     return row ? rowToAgent(row) : undefined;
   }
 

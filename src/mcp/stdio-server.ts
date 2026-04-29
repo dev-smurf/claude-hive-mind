@@ -84,12 +84,26 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
     }
   });
 
-  // Handle clean shutdown
+  // Handle clean shutdown — always exit, even when disconnect rejects.
+  const shutdown = (signal: string): void => {
+    void client
+      .disconnect()
+      .then(() => {
+        process.exit(0);
+      })
+      .catch((err: unknown) => {
+        logger.warn('mcp', 'Disconnect failed during shutdown', {
+          signal,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        process.exit(1);
+      });
+  };
   process.on('SIGINT', () => {
-    void client.disconnect().then(() => process.exit(0));
+    shutdown('SIGINT');
   });
   process.on('SIGTERM', () => {
-    void client.disconnect().then(() => process.exit(0));
+    shutdown('SIGTERM');
   });
 
   // Start stdio transport

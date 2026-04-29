@@ -8,6 +8,10 @@
 
 import type { AgentId } from '../types.js';
 import { agentId } from '../schemas.js';
+import { logger } from '../util/logger.js';
+
+/** After this many consecutive failures, escalate the heartbeat warning. */
+const HEARTBEAT_FAILURE_ESCALATION_THRESHOLD = 3;
 
 /** Default HTTP request timeout: 30 seconds. */
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -39,6 +43,8 @@ export class HiveMindClient {
   /** Per-agent token returned by the server at registration. */
   private agentToken: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** Number of consecutive heartbeat failures. Reset on success. */
+  private heartbeatFailures = 0;
 
   constructor(config: ClientConfig) {
     this.config = config;
@@ -63,7 +69,15 @@ export class HiveMindClient {
       ...(this.config.repoUrl !== undefined ? { repoUrl: this.config.repoUrl } : {}),
     });
 
-    const result = data as { id: string; agentToken?: string };
+    // Validate the register response shape before trusting any field.
+    if (typeof data !== 'object' || data === null || !('id' in data)) {
+      throw new Error('Invalid register response: missing id');
+    }
+    const result = data as { id?: unknown; agentToken?: unknown };
+    if (typeof result.id !== 'string' || result.id.length === 0) {
+      throw new Error('Invalid register response: id is not a non-empty string');
+    }
+
     this.agentIdValue = agentId(result.id);
     // Capture the agent-specific token. From this point forward, all
     // subsequent requests authenticate as this agent (not the bootstrap
@@ -206,12 +220,31 @@ export class HiveMindClient {
   }
 
   private async heartbeat(): Promise<void> {
+    if (!this.agentIdValue) return;
     try {
-      if (this.agentIdValue) {
-        await this.post(`/api/agents/${this.agentIdValue}/heartbeat`, {});
+      await this.post(`/api/agents/${this.agentIdValue}/heartbeat`, {});
+      if (this.heartbeatFailures > 0) {
+        logger.info('heartbeat', 'Recovered after failures', {
+          previousFailures: this.heartbeatFailures,
+        });
       }
-    } catch {
-      // Heartbeat failures are non-fatal — server will eventually mark us stale
+      this.heartbeatFailures = 0;
+    } catch (err: unknown) {
+      this.heartbeatFailures += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      // First failure is a warn, repeated failures escalate to error so an
+      // operator can spot a hung agent without crashing the process.
+      if (this.heartbeatFailures >= HEARTBEAT_FAILURE_ESCALATION_THRESHOLD) {
+        logger.error('heartbeat', 'Repeated heartbeat failures', {
+          failures: this.heartbeatFailures,
+          error: message,
+        });
+      } else {
+        logger.warn('heartbeat', 'Heartbeat failed', {
+          failures: this.heartbeatFailures,
+          error: message,
+        });
+      }
     }
   }
 

@@ -526,3 +526,43 @@ describe('schema', () => {
     }).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// DB integrity at the storage→domain boundary
+// ---------------------------------------------------------------------------
+
+interface DbHandle {
+  prepare(sql: string): { run(...args: unknown[]): unknown };
+}
+
+function rawDb(s: Store): DbHandle {
+  return (s as unknown as { db: DbHandle }).db;
+}
+
+describe('parseEnum row-level safety', () => {
+  it('throws a clear error when an agent row has an invalid status value', () => {
+    store.upsertAgent(AGENT_GABRIEL);
+    // Bypass the domain layer and corrupt the row directly.
+    rawDb(store).prepare("UPDATE agents SET status = 'zombie' WHERE id = ?").run(AGENT_GABRIEL.id);
+    expect(() => store.getAgent(AGENT_GABRIEL.id)).toThrow(/Invalid agent\.status value in DB/);
+  });
+
+  it('throws a clear error when a task row has an invalid priority value', () => {
+    store.upsertAgent(AGENT_GABRIEL);
+    store.insertTask(TASK_PENDING);
+    rawDb(store)
+      .prepare("UPDATE tasks SET priority = 'super-urgent' WHERE id = ?")
+      .run(TASK_PENDING.id);
+    expect(() => store.getTask(TASK_PENDING.id)).toThrow(/Invalid task\.priority value in DB/);
+  });
+
+  it('substitutes empty array when file_paths JSON is corrupt', () => {
+    store.upsertAgent(AGENT_GABRIEL);
+    store.insertTask(TASK_PENDING);
+    rawDb(store)
+      .prepare("UPDATE tasks SET file_paths = 'not valid json' WHERE id = ?")
+      .run(TASK_PENDING.id);
+    const task = store.getTask(TASK_PENDING.id);
+    expect(task?.filePaths).toEqual([]);
+  });
+});

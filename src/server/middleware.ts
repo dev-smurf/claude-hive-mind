@@ -2,16 +2,23 @@
  * Express middleware for authentication, rate limiting, and error handling.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Config } from '../config.js';
 import type { AgentRegistry } from '../services/agent-registry.js';
 import { logger } from '../util/logger.js';
 
-/** Timing-safe string comparison to prevent side-channel leaks. */
+/**
+ * Constant-time string comparison that does not leak length.
+ *
+ * Both inputs are first hashed with SHA-256 to a fixed 32-byte digest, then
+ * the digests are compared with `timingSafeEqual`. This eliminates the
+ * length-mismatch oracle that a naive `length` early-return would expose.
+ */
 export function safeCompare(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+  const ha = createHash('sha256').update(a).digest();
+  const hb = createHash('sha256').update(b).digest();
+  return timingSafeEqual(ha, hb);
 }
 
 // ---------------------------------------------------------------------------
@@ -67,8 +74,9 @@ export function authMiddleware(config: Config, registry: AgentRegistry): Request
 
     const token = authHeader.slice(7);
 
-    // First check: admin token grants full access.
-    if (token.length === config.authToken.length && safeCompare(token, config.authToken)) {
+    // First check: admin token grants full access. safeCompare hashes both
+    // inputs to a fixed-length digest, so length is never leaked.
+    if (safeCompare(token, config.authToken)) {
       req.auth = { authMode: 'admin' };
       next();
       return;
@@ -105,6 +113,48 @@ export function requireAgentMatch(req: Request, res: Response, agentIdParam: str
   }
   res.status(403).json({ error: 'Token does not authorize this operation' });
   return false;
+}
+
+/**
+ * Like `requireAgentMatch` but accepts a nullable owner. When the owner is
+ * null (resource has no assigned agent), only admin tokens may act.
+ *
+ * Used for routes that mutate resources owned by a specific agent: task
+ * complete/fail/unassign/cancel, knowledge delete, conflict resolve.
+ */
+export function requireOwnerOrAdmin(
+  req: Request,
+  res: Response,
+  ownerAgentId: string | null,
+): boolean {
+  const auth = req.auth;
+  if (!auth) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return false;
+  }
+  if (auth.authMode === 'admin') return true;
+  if (ownerAgentId !== null && auth.authenticatedAgentId === ownerAgentId) {
+    return true;
+  }
+  res.status(403).json({ error: 'Token does not authorize this operation' });
+  return false;
+}
+
+/** Allow only admin tokens. Used for destructive cross-cutting operations. */
+export function requireAdmin(req: Request, res: Response): boolean {
+  const auth = req.auth;
+  if (!auth) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return false;
+  }
+  if (auth.authMode === 'admin') return true;
+  res.status(403).json({ error: 'Admin token required' });
+  return false;
+}
+
+/** True iff the request is authenticated as admin (not a per-agent token). */
+export function isAdmin(req: Request): boolean {
+  return req.auth?.authMode === 'admin';
 }
 
 // ---------------------------------------------------------------------------
