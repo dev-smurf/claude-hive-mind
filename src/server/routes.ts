@@ -835,15 +835,17 @@ export function createRoutes(services: RouteServices): Router {
    * the result count (default 100, max 500).
    */
   router.get('/api/messages', (req: Request, res: Response) => {
-    if (!requireAuthAgent(req, res)) return;
     const since = queryParam(req, 'since') ?? null;
     const limitRaw = queryParam(req, 'limit');
     const limit = limitRaw ? Math.min(500, Math.max(1, parseInt(limitRaw, 10) || 100)) : 100;
 
-    if (isAdmin(req)) {
+    // Admin and anonymous-in-open-mode see all messages (LAN trust boundary).
+    // Authenticated agents see only their own visibility scope.
+    if (isAdmin(req) || req.auth?.authMode === 'anonymous') {
       res.json(messages.getAll({ since, limit }));
       return;
     }
+    if (!requireAuthAgent(req, res)) return;
     const aid = req.auth?.authenticatedAgentId;
     if (!aid) {
       res.status(401).json({ error: 'Not authenticated' });

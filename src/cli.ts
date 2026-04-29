@@ -11,6 +11,7 @@
  *   invites          — Manage outstanding invites (list / revoke)
  */
 
+import os from 'node:os';
 import { Command } from 'commander';
 import { loadConfig, validateConfig } from './config.js';
 import { createHiveMindServer } from './server/server.js';
@@ -23,6 +24,16 @@ import {
   parseInviteUrl,
   removeHive,
 } from './util/credentials.js';
+
+/**
+ * Default display name = device hostname so teammates can tell whose box is
+ * connected. Strips Apple's `.local` suffix; falls back if hostname is empty.
+ */
+function defaultDisplayName(): string {
+  const raw = os.hostname().trim();
+  if (!raw) return 'Unnamed Agent';
+  return raw.replace(/\.local$/i, '');
+}
 
 const program = new Command();
 
@@ -321,7 +332,7 @@ program
   .command('connect')
   .description('Run as an MCP stdio bridge (deferred-connect; tools opt in via hive_connect)')
   .option('-s, --server <url>', 'Direct connect: server URL (skips deferred mode)')
-  .option('-n, --name <name>', 'Display name for this agent', 'Claude Code Agent')
+  .option('-n, --name <name>', 'Display name for this agent (defaults to device hostname)', defaultDisplayName())
   .option('-t, --tool <tool>', 'Tool type (claude-code, cursor, codex, etc.)', 'claude-code')
   .option('--token <token>', 'Direct connect: auth token')
   .option('--workspace <path>', 'Workspace path', process.cwd())

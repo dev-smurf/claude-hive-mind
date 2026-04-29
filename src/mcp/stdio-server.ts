@@ -21,7 +21,7 @@ import { HiveMindClient } from './client.js';
 import { ALWAYS_ON_TOOLS, TOOL_DEFINITIONS } from './tools.js';
 import { zodToJsonSchema } from '../util/zod-to-json-schema.js';
 import { logger } from '../util/logger.js';
-import { getHive, listHives, recordHiveUse } from '../util/credentials.js';
+import { addHive, getHive, listHives, parseInviteUrl, recordHiveUse } from '../util/credentials.js';
 
 export interface StdioServerConfig {
   /** Direct-connect URL. Omit for deferred mode. */
@@ -97,15 +97,28 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
     }
   });
 
-  // Clean shutdown — disconnect the active hive client if any.
-  const shutdown = (signal: string): void => {
-    void (session.client?.disconnect() ?? Promise.resolve())
+  // Clean shutdown — disconnect the active hive client if any. Fires on
+  // any of: SIGINT/SIGTERM/SIGHUP, parent closing stdin (Claude Code exit),
+  // or the Node process otherwise being asked to exit. Idempotent so the
+  // various paths can race without doubling the DELETE call.
+  let shuttingDown = false;
+  const shutdown = (reason: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    const disconnectPromise = session.client?.disconnect() ?? Promise.resolve();
+    // Cap the disconnect at 1.5s so a stalled server never blocks shutdown.
+    const timeoutPromise = new Promise<void>((resolve) => {
+      setTimeout(resolve, 1500).unref();
+    });
+
+    void Promise.race([disconnectPromise, timeoutPromise])
       .then(() => {
         process.exit(0);
       })
       .catch((err: unknown) => {
         logger.warn('mcp', 'Disconnect failed during shutdown', {
-          signal,
+          reason,
           error: err instanceof Error ? err.message : String(err),
         });
         process.exit(1);
@@ -116,6 +129,18 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
   });
   process.on('SIGTERM', () => {
     shutdown('SIGTERM');
+  });
+  process.on('SIGHUP', () => {
+    shutdown('SIGHUP');
+  });
+  // When the MCP host (Claude Code, Cursor, etc.) closes the stdio pipe
+  // — e.g. the user quits Claude or the terminal — Node sees stdin end.
+  // Trigger a clean disconnect so the dashboard removes the bubble live.
+  process.stdin.on('end', () => {
+    shutdown('stdin-end');
+  });
+  process.stdin.on('close', () => {
+    shutdown('stdin-close');
   });
 
   const transport = new StdioServerTransport();
@@ -138,6 +163,8 @@ async function dispatchTool(
       return handleListSaved();
     case 'hive_connect':
       return handleConnect(session, config, args);
+    case 'hive_join':
+      return handleJoin(session, config, args);
     case 'hive_disconnect':
       return handleDisconnect(session);
     case 'hive_session_status':
@@ -330,6 +357,104 @@ async function handleConnect(
     agentId,
     displayName,
     message: `Connected to '${name}' as '${displayName}'. Hive tools are now available in this session.`,
+  };
+}
+
+async function handleJoin(
+  session: SessionState,
+  config: StdioServerConfig,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  if (session.client) {
+    throw new Error(
+      `Already connected to '${session.hiveName ?? 'unknown'}'. Call hive_disconnect first to switch hives.`,
+    );
+  }
+
+  const invite = typeof args.invite === 'string' ? args.invite.trim() : '';
+  if (!invite) {
+    throw new Error('hive_join requires an "invite" argument (URL or bare code)');
+  }
+
+  let serverUrl: string;
+  let code: string;
+  const parsed = parseInviteUrl(invite);
+  if (parsed) {
+    serverUrl = parsed.url;
+    code = parsed.code;
+  } else {
+    const fallback = typeof args.server === 'string' ? args.server : '';
+    if (!fallback) {
+      throw new Error(
+        'Bare invite code requires a "server" argument (e.g. http://10.0.0.147:7777). ' +
+          'Or pass the full chm:// URL instead.',
+      );
+    }
+    serverUrl = fallback;
+    code = invite;
+  }
+
+  // Redeem the invite — this is anonymous on the server side.
+  const res = await fetch(`${serverUrl}/api/invites/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Invite redemption failed (${String(res.status)}): ${text}`);
+  }
+  const data = (await res.json()) as {
+    joinToken: string;
+    joinTokenId: string;
+    label: string | null;
+  };
+
+  const requestedName = typeof args.name === 'string' ? args.name : '';
+  const hiveName =
+    requestedName !== '' ? requestedName : (new URL(serverUrl).hostname.split('.')[0] ?? 'hive');
+
+  await addHive({
+    name: hiveName,
+    url: serverUrl,
+    joinToken: data.joinToken,
+    joinTokenId: data.joinTokenId,
+    ...(data.label !== null ? { label: data.label } : {}),
+  });
+
+  // Now register this session as an agent and start heartbeating.
+  const displayName =
+    typeof args.displayName === 'string' && args.displayName.length > 0
+      ? args.displayName
+      : config.displayName;
+  const client = new HiveMindClient({
+    serverUrl,
+    displayName,
+    tool: config.tool,
+    workspacePath: config.workspacePath,
+    heartbeatIntervalMs: 10_000,
+    authToken: data.joinToken,
+  });
+  const agentId = await client.connect();
+  await recordHiveUse(hiveName);
+
+  session.client = client;
+  session.hiveName = hiveName;
+
+  logger.info('mcp', 'Session joined hive via invite', {
+    hive: hiveName,
+    url: serverUrl,
+    agentId,
+    displayName,
+  });
+
+  return {
+    connected: true,
+    hive: hiveName,
+    url: serverUrl,
+    agentId,
+    displayName,
+    message: `Joined '${hiveName}' as '${displayName}'. Hive tools are now available — and the bubble should already be visible on the dashboard.`,
   };
 }
 

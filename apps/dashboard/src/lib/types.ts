@@ -12,9 +12,51 @@ export interface Agent {
   tool: AgentTool;
   status: AgentStatus;
   currentBranch: string | null;
+  currentTaskId?: string | null;
+  lastHeartbeat?: string;
+  connectedAt?: string;
   /** Present only for the caller's own record or for admin viewers. */
   workspacePath?: string;
   repoUrl?: string | null;
+}
+
+export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
+
+export interface Task {
+  id: string;
+  title: string;
+  description?: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  assignedTo?: string | null;
+  createdBy?: string | null;
+  filePaths?: readonly string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type OwnershipMode = 'exclusive' | 'shared';
+
+export interface FileClaim {
+  filePath: string;
+  agentId: string;
+  mode: OwnershipMode;
+  branch?: string | null;
+  claimedAt: string;
+  expiresAt?: string | null;
+  reason?: string | null;
+}
+
+export type AgentMetadata = Record<string, { value: string; updatedAt: string }>;
+
+export interface AgentMessage {
+  id: string;
+  fromAgentId: string;
+  /** null = broadcast to everyone */
+  toAgentId: string | null;
+  content: string;
+  createdAt: string;
 }
 
 /** Subset of WS messages the dashboard reacts to. */

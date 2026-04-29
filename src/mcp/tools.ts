@@ -143,6 +143,28 @@ export const hiveConnectSchema = z.object({
 
 export const hiveDisconnectSchema = z.object({});
 
+export const hiveJoinSchema = z.object({
+  invite: z
+    .string()
+    .describe(
+      'The invite URL (chm://server#code) or bare code shared by the hive host. ' +
+        'If a bare code, also pass `server` with the host URL (http://host:7777).',
+    ),
+  server: z
+    .string()
+    .url()
+    .optional()
+    .describe('Required only if `invite` is a bare code, not a chm:// URL.'),
+  name: z
+    .string()
+    .optional()
+    .describe('Short name to save this hive under locally (defaults to the server hostname).'),
+  displayName: z
+    .string()
+    .optional()
+    .describe('How this agent should appear on the hive dashboard (defaults to device hostname).'),
+});
+
 /** Always-on schema for hive_status (whether connected or not). */
 export const hiveStatusSchemaAlwaysOn = z.object({});
 
@@ -176,6 +198,15 @@ export const ALWAYS_ON_TOOLS: readonly ToolDefinition[] = [
       'machine that have not called hive_connect remain disconnected. After this call, ' +
       'the full set of hive_* tools (hive_claim_file, hive_share_knowledge, etc.) becomes available.',
     inputSchema: hiveConnectSchema,
+  },
+  {
+    name: 'hive_join',
+    description:
+      'One-shot: redeem an invite, save credentials for this machine, AND connect this session. ' +
+      'Use this when a teammate shares an invite URL like "chm://server:7777#CODE-XYZ" — pass ' +
+      'the whole string as `invite`. After this, the agent appears on the dashboard immediately ' +
+      'and the full hive_* toolset is available.',
+    inputSchema: hiveJoinSchema,
   },
   {
     name: 'hive_disconnect',
