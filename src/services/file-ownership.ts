@@ -239,6 +239,10 @@ export class FileOwnershipService {
     const files = this.store.getFilesByAgent(agentId);
     if (files.length === 0) return 0;
 
+    // Delete BEFORE auto-resolving so the resolver doesn't see the
+    // departing agent as still holding a claim.
+    this.store.deleteFilesByAgent(agentId);
+
     for (const file of files) {
       this.bus.emit({
         type: 'file_released',
@@ -246,8 +250,8 @@ export class FileOwnershipService {
         agentId,
         reason: 'manual',
       });
+      this.autoResolveConflicts(file.filePath);
     }
-    this.store.deleteFilesByAgent(agentId);
 
     return files.length;
   }

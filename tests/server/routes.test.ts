@@ -1855,6 +1855,117 @@ describe('HTTP API', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Body parsing robustness — non-object payloads must NOT 500
+  // -----------------------------------------------------------------------
+
+  describe('Body parsing robustness', () => {
+    async function rawPost(
+      url: string,
+      body: string,
+      contentType = 'application/json',
+    ): Promise<Response> {
+      return fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': contentType },
+        body,
+      });
+    }
+
+    it('null body returns 400 (not 500)', async () => {
+      const res = await rawPost(`${base}/api/agents/register`, 'null');
+      expect(res.status).toBe(400);
+    });
+
+    it('number body returns 400', async () => {
+      const res = await rawPost(`${base}/api/agents/register`, '12345');
+      expect(res.status).toBe(400);
+    });
+
+    it('string body returns 400', async () => {
+      const res = await rawPost(`${base}/api/agents/register`, '"hello"');
+      expect(res.status).toBe(400);
+    });
+
+    it('array body returns 400', async () => {
+      const res = await rawPost(`${base}/api/agents/register`, '[1,2,3]');
+      expect(res.status).toBe(400);
+    });
+
+    it('malformed JSON returns 400 with helpful error', async () => {
+      const res = await rawPost(`${base}/api/agents/register`, '{not valid');
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBeTruthy();
+    });
+
+    it('non-JSON content-type returns 400 (not 500)', async () => {
+      const res = await rawPost(`${base}/api/agents/register`, '<xml/>', 'application/xml');
+      // Either 400 (we caught it) or 415, but never 500.
+      expect(res.status).not.toBe(500);
+    });
+
+    it('does not include x-powered-by header (Express)', async () => {
+      const res = await get(`${base}/health`);
+      expect(res.headers.get('x-powered-by')).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // DELETE /api/files/claim should hint, not pretend to release "claim"
+  // -----------------------------------------------------------------------
+
+  describe('Release UX hint', () => {
+    it('DELETE /api/files/claim returns 400 with a hint', async () => {
+      const a = await registerAgent(base);
+      const res = await del(`${base}/api/files/claim?agentId=${a.id}`);
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; hint?: string };
+      expect(body.error.toLowerCase()).toContain('release');
+    });
+
+    it('DELETE /api/files (no path) returns 400 with hint', async () => {
+      const res = await del(`${base}/api/files`);
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Auto-resolve conflicts on agent disconnect
+  // -----------------------------------------------------------------------
+
+  describe('Auto-resolve on disconnect', () => {
+    it('disconnecting an agent auto-resolves their open conflicts', async () => {
+      const a = await registerAgent(base, 'A');
+      const b = await registerAgent(base, 'B');
+
+      await post(`${base}/api/files/claim`, {
+        filePath: 'fight.ts',
+        agentId: a.id,
+        mode: 'exclusive',
+      });
+      // B contests → conflict opened
+      await post(`${base}/api/files/claim`, {
+        filePath: 'fight.ts',
+        agentId: b.id,
+        mode: 'exclusive',
+      });
+
+      const before = (await (await get(`${base}/api/conflicts?unresolved=true`)).json()) as {
+        id: string;
+      }[];
+      expect(before.length).toBeGreaterThanOrEqual(1);
+
+      // A disconnects (releases their claim under the hood)
+      await del(`${base}/api/agents/${a.id}`);
+
+      const after = (await (await get(`${base}/api/conflicts?unresolved=true`)).json()) as {
+        id: string;
+      }[];
+      expect(after.length).toBe(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Rate limiting
   // -----------------------------------------------------------------------
 

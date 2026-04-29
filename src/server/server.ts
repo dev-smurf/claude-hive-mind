@@ -49,8 +49,9 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   const conflicts = new ConflictDetector(store, bus);
   const invites = new InviteService(store);
 
-  // Wire cross-service dependency (avoids circular import)
+  // Wire cross-service dependencies (avoid circular imports)
   registry.setTaskQueue(taskQueue);
+  registry.setFileOwnership(fileOwnership);
 
   // -------------------------------------------------------------------------
   // Express app
@@ -60,12 +61,43 @@ export function createHiveMindServer(config: Config): HiveMindServer {
 
   const app = express();
 
+  // Don't advertise the framework — small but free defense-in-depth.
+  app.disable('x-powered-by');
+
   // Resolve `req.ip` correctly when behind a reverse proxy. Set 0 (false)
   // to ignore X-Forwarded-For; >0 trusts that many proxy hops.
   app.set('trust proxy', config.trustProxy);
 
-  // Parse JSON bodies
-  app.use(express.json({ limit: '1mb' }));
+  // Parse JSON bodies. Use `strict: false` so top-level primitives (null,
+  // numbers, strings, arrays) parse without throwing — that lets the
+  // route's Zod schema return a clean 400 instead of the body-parser
+  // raising and falling through to the global 500 handler.
+  app.use(express.json({ limit: '1mb', strict: false }));
+
+  // Body-parse error handler — converts SyntaxError / PayloadTooLargeError
+  // / unsupported-charset etc. into a JSON 400, instead of letting them
+  // reach the global error handler as a 500. Must be registered AFTER
+  // express.json() so it sees the parser's errors.
+  app.use(
+    (err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (err && typeof err === 'object' && 'type' in err) {
+        const e = err as { type?: string; status?: number; message?: string };
+        if (
+          e.type === 'entity.parse.failed' ||
+          e.type === 'entity.too.large' ||
+          e.type === 'charset.unsupported' ||
+          e.type === 'encoding.unsupported'
+        ) {
+          res.status(400).json({
+            error: 'Invalid request body',
+            details: e.message ?? 'Body could not be parsed',
+          });
+          return;
+        }
+      }
+      next(err);
+    },
+  );
 
   // CORS
   app.use(

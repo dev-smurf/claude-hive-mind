@@ -24,6 +24,7 @@ import type { Config } from '../config.js';
 import type { Store } from './store.js';
 import type { EventBus } from './event-bus.js';
 import type { TaskQueue } from './task-queue.js';
+import type { FileOwnershipService } from './file-ownership.js';
 import { logger } from '../util/logger.js';
 
 export interface RegisterInput {
@@ -46,6 +47,7 @@ export class AgentRegistry {
   private readonly bus: EventBus;
   private readonly config: Config;
   private taskQueue: TaskQueue | null = null;
+  private fileOwnership: FileOwnershipService | null = null;
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(store: Store, bus: EventBus, config: Config) {
@@ -60,6 +62,15 @@ export class AgentRegistry {
    */
   setTaskQueue(taskQueue: TaskQueue): void {
     this.taskQueue = taskQueue;
+  }
+
+  /**
+   * Set the file-ownership reference so disconnect can route file release
+   * through the service layer (which auto-resolves conflicts and emits
+   * file_released events) instead of bulk-deleting at the store layer.
+   */
+  setFileOwnership(fileOwnership: FileOwnershipService): void {
+    this.fileOwnership = fileOwnership;
   }
 
   /**
@@ -168,7 +179,15 @@ export class AgentRegistry {
 
     this.store.updateAgentStatus(id, 'disconnected');
     this.store.updateAgentTask(id, null);
-    this.store.deleteFilesByAgent(id);
+
+    // Route file release through the service so conflicts auto-resolve and
+    // file_released events fire. Fall back to a bulk delete if file
+    // ownership wasn't wired (test setups).
+    if (this.fileOwnership) {
+      this.fileOwnership.releaseAll(id);
+    } else {
+      this.store.deleteFilesByAgent(id);
+    }
 
     // Unassign orphaned tasks so other agents can pick them up
     if (this.taskQueue) {

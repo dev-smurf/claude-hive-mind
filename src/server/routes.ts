@@ -85,7 +85,17 @@ function queryParam(req: Request, name: string): string | undefined {
  * the validation error message and return null. Caller checks for null.
  */
 function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | null {
-  const result = schema.safeParse(req.body);
+  // Reject non-object bodies up front so the Zod error message is
+  // precise instead of complaining about every required field.
+  const raw = req.body as unknown;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    res.status(400).json({
+      error: 'Invalid request body',
+      details: 'Body must be a JSON object',
+    });
+    return null;
+  }
+  const result = schema.safeParse(raw);
   if (!result.success) {
     res.status(400).json({
       error: 'Invalid request body',
@@ -295,6 +305,26 @@ export function createRoutes(services: RouteServices): Router {
       }
     }),
   );
+
+  /**
+   * Block `DELETE /api/files/claim` BEFORE the wildcard route so the
+   * common mistake (mirroring `POST /api/files/claim`) returns a clear
+   * hint instead of pretending to release a file literally named "claim".
+   * Also blocks `DELETE /api/files` (no path).
+   */
+  router.delete('/api/files/claim', (_req: Request, res: Response) => {
+    res.status(400).json({
+      error:
+        'To release a file, the path goes in the URL: DELETE /api/files/<file-path>?agentId=<id>',
+      hint: 'Example: DELETE /api/files/src%2Findex.ts?agentId=abc',
+    });
+  });
+
+  router.delete('/api/files', (_req: Request, res: Response) => {
+    res.status(400).json({
+      error: 'Missing file path. Use DELETE /api/files/<file-path>?agentId=<id>',
+    });
+  });
 
   router.delete(
     '/api/files/{*path}',
@@ -608,7 +638,12 @@ export function createRoutes(services: RouteServices): Router {
   router.post('/api/invites', (req: Request, res: Response) => {
     if (!requireAuthAgent(req, res)) return;
 
-    const body = req.body as { label?: unknown; ttlMs?: unknown };
+    // Defensive read — body may be null, a primitive, or an array.
+    const rawBody = req.body as unknown;
+    const body =
+      rawBody !== null && typeof rawBody === 'object' && !Array.isArray(rawBody)
+        ? (rawBody as { label?: unknown; ttlMs?: unknown })
+        : {};
     const label = typeof body.label === 'string' ? body.label.slice(0, 200) : undefined;
     const ttlMs = typeof body.ttlMs === 'number' && body.ttlMs > 0 ? body.ttlMs : undefined;
 
@@ -641,7 +676,11 @@ export function createRoutes(services: RouteServices): Router {
    * via the global rateLimitMiddleware. Single-use; expires fast.
    */
   router.post('/api/invites/redeem', (req: Request, res: Response) => {
-    const body = req.body as { code?: unknown };
+    const rawBody = req.body as unknown;
+    const body =
+      rawBody !== null && typeof rawBody === 'object' && !Array.isArray(rawBody)
+        ? (rawBody as { code?: unknown })
+        : {};
     const rawCode = typeof body.code === 'string' ? body.code : '';
     const code = normalizeInviteCode(rawCode);
     if (!code) {
