@@ -513,10 +513,7 @@ async function handleJoin(
   };
 }
 
-async function handleDisconnect(
-  session: SessionState,
-  server: ToolListNotifier,
-): Promise<unknown> {
+async function handleDisconnect(session: SessionState, server: ToolListNotifier): Promise<unknown> {
   if (!session.client) {
     return { connected: false, message: 'Not connected to any hive.' };
   }

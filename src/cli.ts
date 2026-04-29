@@ -58,94 +58,87 @@ program
   .option('--no-public', 'LAN-only mode (skip the public cloudflared tunnel)')
   .option('-l, --label <label>', 'Optional label for the invite (e.g. "demo run")')
   .option('--ttl <minutes>', 'How long the invite stays valid', '60')
-  .action(
-    async (opts: {
-      port: string;
-      public: boolean;
-      label?: string;
-      ttl: string;
-    }) => {
-      // Auto-generate an ephemeral admin token if the user didn't set one.
-      // This is what makes `chm start` truly one-shot — no env var dance.
-      process.env.CHM_AUTH_TOKEN ??= randomBytes(32).toString('hex');
-      process.env.CHM_PORT = opts.port;
-      process.env.CHM_HOST = '0.0.0.0';
+  .action(async (opts: { port: string; public: boolean; label?: string; ttl: string }) => {
+    // Auto-generate an ephemeral admin token if the user didn't set one.
+    // This is what makes `chm start` truly one-shot — no env var dance.
+    process.env.CHM_AUTH_TOKEN ??= randomBytes(32).toString('hex');
+    process.env.CHM_PORT = opts.port;
+    process.env.CHM_HOST = '0.0.0.0';
 
-      let tunnel: TunnelHandle | null = null;
-      if (opts.public) {
-        try {
-          tunnel = await startQuickTunnel(parseInt(opts.port, 10), {
-            onProgress: (msg) => {
-              process.stdout.write(`  ${msg}\n`);
-            },
-          });
-          process.env.CHM_PUBLIC_URL = tunnel.url;
-        } catch (err) {
-          process.stderr.write(
-            `  Tunnel failed (${err instanceof Error ? err.message : String(err)}); ` +
-              `continuing in LAN-only mode.\n`,
-          );
-        }
-      }
-
-      const config = loadConfig();
-      setLogLevel(config.logLevel);
-      for (const warning of validateConfig(config)) {
-        logger.warn('config', warning);
-      }
-
-      const server = createHiveMindServer(config);
-      await server.start();
-
-      // Mint a fresh invite via the local HTTP API. Single-use; if a teammate
-      // joins and another wants to follow, the host runs `chm invite` again.
-      const ttlMs = Math.max(1, parseInt(opts.ttl, 10)) * 60 * 1000;
-      let inviteUrl: string | null = null;
+    let tunnel: TunnelHandle | null = null;
+    if (opts.public) {
       try {
-        const res = await fetch(`http://localhost:${opts.port}/api/invites`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${config.authToken}`,
+        tunnel = await startQuickTunnel(parseInt(opts.port, 10), {
+          onProgress: (msg) => {
+            process.stdout.write(`  ${msg}\n`);
           },
-          body: JSON.stringify({
-            ttlMs,
-            // Demo-mode default: invite is reusable up to 50 times within
-            // the TTL. Lets the host share one URL with multiple teammates.
-            maxUses: 50,
-            ...(opts.label !== undefined ? { label: opts.label } : {}),
-          }),
         });
-        if (res.ok) {
-          const data = (await res.json()) as { url?: string; code: string };
-          inviteUrl =
-            data.url ??
-            formatInviteUrl(tunnel?.url ?? `http://localhost:${opts.port}`, data.code);
-        }
+        process.env.CHM_PUBLIC_URL = tunnel.url;
       } catch (err) {
-        logger.warn('cli', 'Failed to auto-mint invite', {
-          error: err instanceof Error ? err.message : String(err),
-        });
+        process.stderr.write(
+          `  Tunnel failed (${err instanceof Error ? err.message : String(err)}); ` +
+            `continuing in LAN-only mode.\n`,
+        );
       }
+    }
 
-      let shuttingDown = false;
-      const shutdown = async (): Promise<void> => {
-        if (shuttingDown) return;
-        shuttingDown = true;
-        if (tunnel) tunnel.stop();
-        await server.stop();
-        process.exit(0);
-      };
-      process.on('SIGINT', () => void shutdown());
-      process.on('SIGTERM', () => void shutdown());
+    const config = loadConfig();
+    setLogLevel(config.logLevel);
+    for (const warning of validateConfig(config)) {
+      logger.warn('config', warning);
+    }
 
-      const dashboardUrl = tunnel?.url ?? `http://localhost:${opts.port}`;
-      const ttlMin = Math.round(ttlMs / 60_000);
-      const shareLine = inviteUrl ?? '(invite mint failed — run `chm invite` manually)';
-      const accessHint = tunnel ? 'public · over the internet' : 'LAN only';
-      const ttlHint = `reusable up to 50× · ${String(ttlMin)} min`;
+    const server = createHiveMindServer(config);
+    await server.start();
 
-      process.stdout.write(`
+    // Mint a fresh invite via the local HTTP API. Single-use; if a teammate
+    // joins and another wants to follow, the host runs `chm invite` again.
+    const ttlMs = Math.max(1, parseInt(opts.ttl, 10)) * 60 * 1000;
+    let inviteUrl: string | null = null;
+    try {
+      const res = await fetch(`http://localhost:${opts.port}/api/invites`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${config.authToken}`,
+        },
+        body: JSON.stringify({
+          ttlMs,
+          // Demo-mode default: invite is reusable up to 50 times within
+          // the TTL. Lets the host share one URL with multiple teammates.
+          maxUses: 50,
+          ...(opts.label !== undefined ? { label: opts.label } : {}),
+        }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { url?: string; code: string };
+        inviteUrl =
+          data.url ?? formatInviteUrl(tunnel?.url ?? `http://localhost:${opts.port}`, data.code);
+      }
+    } catch (err) {
+      logger.warn('cli', 'Failed to auto-mint invite', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    let shuttingDown = false;
+    const shutdown = async (): Promise<void> => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      if (tunnel) tunnel.stop();
+      await server.stop();
+      process.exit(0);
+    };
+    process.on('SIGINT', () => void shutdown());
+    process.on('SIGTERM', () => void shutdown());
+
+    const dashboardUrl = tunnel?.url ?? `http://localhost:${opts.port}`;
+    const ttlMin = Math.round(ttlMs / 60_000);
+    const shareLine = inviteUrl ?? '(invite mint failed — run `chm invite` manually)';
+    const accessHint = tunnel ? 'public · over the internet' : 'LAN only';
+    const ttlHint = `reusable up to 50× · ${String(ttlMin)} min`;
+
+    process.stdout.write(`
 ╭──────────────────────────────────────────────────────────────────╮
 │  Claude Hive Mind                                                │
 │                                                                  │
@@ -161,8 +154,7 @@ program
 │  Stop the hive:        Ctrl+C                                    │
 ╰──────────────────────────────────────────────────────────────────╯
 `);
-    },
-  );
+  });
 
 // ---------------------------------------------------------------------------
 // serve — start the central server (advanced: explicit, no tunnel by default)
@@ -182,13 +174,7 @@ program
       'peers off your LAN can join.',
   )
   .action(
-    async (opts: {
-      port: string;
-      host: string;
-      db: string;
-      auth: boolean;
-      public?: boolean;
-    }) => {
+    async (opts: { port: string; host: string; db: string; auth: boolean; public?: boolean }) => {
       if (opts.port) process.env.CHM_PORT = opts.port;
       if (opts.host) process.env.CHM_HOST = opts.host;
       if (opts.db) process.env.CHM_DB_PATH = opts.db;
@@ -250,10 +236,7 @@ program
       }
 
       const localUrl = `http://${config.host}:${String(config.port)}`;
-      const publicLine =
-        tunnel !== null
-          ? `│  Public   : ${tunnel.url.padEnd(40)}│\n`
-          : '';
+      const publicLine = tunnel !== null ? `│  Public   : ${tunnel.url.padEnd(40)}│\n` : '';
 
       process.stdout.write(`
 ╭──────────────────────────────────────────────────────────╮
@@ -286,55 +269,49 @@ program
   .option('--uses <n>', 'Max number of redemptions (default 1 = single-use)', '1')
   .option('--token <token>', 'Auth token (falls back to CHM_AUTH_TOKEN env var)')
   .action(
-    async (opts: {
-      server: string;
-      label?: string;
-      ttl: string;
-      uses: string;
-      token?: string;
-    }) => {
-    const token = opts.token ?? process.env.CHM_AUTH_TOKEN;
-    if (!token) {
-      process.stderr.write(
-        'No auth token. Pass --token <X> or set CHM_AUTH_TOKEN.\n' +
-          'If you are an agent (peer), use the agent token from your saved hive.\n',
-      );
-      process.exit(1);
-    }
+    async (opts: { server: string; label?: string; ttl: string; uses: string; token?: string }) => {
+      const token = opts.token ?? process.env.CHM_AUTH_TOKEN;
+      if (!token) {
+        process.stderr.write(
+          'No auth token. Pass --token <X> or set CHM_AUTH_TOKEN.\n' +
+            'If you are an agent (peer), use the agent token from your saved hive.\n',
+        );
+        process.exit(1);
+      }
 
-    const ttlMs = Math.max(1, parseInt(opts.ttl, 10)) * 60 * 1000;
-    const maxUses = Math.max(1, parseInt(opts.uses, 10));
-    const body = JSON.stringify({
-      ...(opts.label !== undefined ? { label: opts.label } : {}),
-      ttlMs,
-      maxUses,
-    });
+      const ttlMs = Math.max(1, parseInt(opts.ttl, 10)) * 60 * 1000;
+      const maxUses = Math.max(1, parseInt(opts.uses, 10));
+      const body = JSON.stringify({
+        ...(opts.label !== undefined ? { label: opts.label } : {}),
+        ttlMs,
+        maxUses,
+      });
 
-    const res = await fetch(`${opts.server}/api/invites`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body,
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      process.stderr.write(`Failed to create invite (${String(res.status)}): ${text}\n`);
-      process.exit(1);
-    }
-    const data = (await res.json()) as {
-      code: string;
-      expiresAt: string;
-      url?: string;
-    };
-    // Prefer the server-built URL — it embeds the public tunnel URL when
-    // `chm serve --public` is on, so peers off the LAN can actually reach it.
-    const url = data.url ?? formatInviteUrl(opts.server, data.code);
-    const ttlMin = Math.round(ttlMs / 60_000);
+      const res = await fetch(`${opts.server}/api/invites`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        process.stderr.write(`Failed to create invite (${String(res.status)}): ${text}\n`);
+        process.exit(1);
+      }
+      const data = (await res.json()) as {
+        code: string;
+        expiresAt: string;
+        url?: string;
+      };
+      // Prefer the server-built URL — it embeds the public tunnel URL when
+      // `chm serve --public` is on, so peers off the LAN can actually reach it.
+      const url = data.url ?? formatInviteUrl(opts.server, data.code);
+      const ttlMin = Math.round(ttlMs / 60_000);
 
-    const useHint = maxUses === 1 ? 'Single use' : `Up to ${String(maxUses)} uses`;
-    process.stdout.write(`
+      const useHint = maxUses === 1 ? 'Single use' : `Up to ${String(maxUses)} uses`;
+      process.stdout.write(`
 ┌─────────────────────────────────────────────────────────┐
 │  Invite created${opts.label ? ` for ${opts.label}` : ''}│
 │                                                         │
@@ -347,7 +324,8 @@ program
 │  Expires in ${String(ttlMin).padEnd(2)} min. ${useHint.padEnd(20)}│
 └─────────────────────────────────────────────────────────┘
 `);
-  });
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // join — redeem an invite, save credentials for this machine
@@ -525,7 +503,11 @@ program
   .command('connect')
   .description('Run as an MCP stdio bridge (deferred-connect; tools opt in via hive_connect)')
   .option('-s, --server <url>', 'Direct connect: server URL (skips deferred mode)')
-  .option('-n, --name <name>', 'Display name for this agent (defaults to device hostname)', defaultDisplayName())
+  .option(
+    '-n, --name <name>',
+    'Display name for this agent (defaults to device hostname)',
+    defaultDisplayName(),
+  )
   .option('-t, --tool <tool>', 'Tool type (claude-code, cursor, codex, etc.)', 'claude-code')
   .option('--token <token>', 'Direct connect: auth token')
   .option('--workspace <path>', 'Workspace path', process.cwd())

@@ -706,8 +706,7 @@ export function createRoutes(services: RouteServices): Router {
       // Build a chm/chms URL the peer can paste verbatim. Prefer the public
       // tunnel URL (set by `chm serve --public`) so the invite is reachable
       // off-LAN; otherwise fall back to whatever host the requester used.
-      const baseUrl =
-        config.publicUrl ?? (req.headers.host ? `http://${req.headers.host}` : null);
+      const baseUrl = config.publicUrl ?? (req.headers.host ? `http://${req.headers.host}` : null);
       let inviteUrl: string | undefined;
       if (baseUrl) {
         try {

@@ -2,12 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventBus } from '../../src/services/event-bus.js';
 import type { ServerMessage } from '../../src/types.js';
 import { agentId, taskId, conflictId, decisionId, isoTimestamp } from '../../src/schemas.js';
-import {
-  AGENT_DAVE,
-  CONFLICT_FILE,
-  FULL_STATE,
-  COMPACT_STATUS,
-} from '../fixtures/valid-data.js';
+import { AGENT_DAVE, CONFLICT_FILE, FULL_STATE, COMPACT_STATUS } from '../fixtures/valid-data.js';
 
 let bus: EventBus;
 type StderrSpy = ReturnType<typeof vi.spyOn<NodeJS.WriteStream, 'write'>>;

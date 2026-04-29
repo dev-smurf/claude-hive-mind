@@ -72,8 +72,7 @@ function cacheDir(): string {
   // XDG_CACHE_HOME, when set, must be an absolute path (per spec). Reject
   // relative or traversal-laden values so an attacker controlling the env
   // can't redirect the binary download outside the user's home tree.
-  const useXdg =
-    xdg !== undefined && xdg.length > 0 && path.isAbsolute(xdg) && !xdg.includes('..');
+  const useXdg = xdg !== undefined && xdg.length > 0 && path.isAbsolute(xdg) && !xdg.includes('..');
   const base = useXdg ? xdg : path.join(os.homedir(), '.cache');
   return path.join(base, 'claude-hive-mind', 'bin');
 }
@@ -129,7 +128,10 @@ async function extractCloudflaredFromTgz(tgzPath: string, destPath: string): Pro
   // size at offset 124 (12 bytes octal).
   let off = 0;
   while (off + 512 <= tarBuf.length) {
-    const nameRaw = tarBuf.subarray(off, off + 100).toString('utf8').replace(/\0.*$/, '');
+    const nameRaw = tarBuf
+      .subarray(off, off + 100)
+      .toString('utf8')
+      .replace(/\0.*$/, '');
     if (nameRaw === '') break; // end-of-archive marker
     // Path-traversal guard: never trust the entry name. We only WRITE the
     // matched entry to a fixed `destPath`, but any future refactor that
