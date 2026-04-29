@@ -1467,6 +1467,285 @@ describe('HTTP API', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Invite / join-token onboarding flow
+  // -----------------------------------------------------------------------
+
+  describe('Invites & onboarding', () => {
+    let authedServer: HiveMindServer;
+    let authedBase: string;
+
+    beforeEach(async () => {
+      authedServer = createHiveMindServer(
+        testConfig({ authEnabled: true, authToken: 'admin-secret' }),
+      );
+      await authedServer.start();
+      authedBase = baseUrl(authedServer);
+    });
+
+    afterEach(async () => {
+      await authedServer.stop();
+    });
+
+    it('admin can mint an invite', async () => {
+      const res = await post(`${authedBase}/api/invites`, { label: 'Felix' }, 'admin-secret');
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { code: string; expiresAt: string };
+      expect(body.code).toMatch(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+      expect(body.expiresAt).toBeTruthy();
+    });
+
+    it('redeeming a valid invite returns a join token', async () => {
+      const inviteRes = await post(`${authedBase}/api/invites`, { label: 'Bob' }, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+
+      const redeemRes = await post(`${authedBase}/api/invites/redeem`, { code });
+      expect(redeemRes.status).toBe(201);
+      const body = (await redeemRes.json()) as { joinToken: string; joinTokenId: string };
+      expect(body.joinToken).toMatch(/^[0-9a-f]{64}$/);
+      expect(body.joinTokenId).toBeTruthy();
+    });
+
+    it('redeem is single-use', async () => {
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+
+      const r1 = await post(`${authedBase}/api/invites/redeem`, { code });
+      expect(r1.status).toBe(201);
+      const r2 = await post(`${authedBase}/api/invites/redeem`, { code });
+      expect(r2.status).toBe(404);
+    });
+
+    it('redeem accepts a code with whitespace and any case', async () => {
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+      const messy = `  ${code.toLowerCase().replace('-', ' ')}  `;
+      const res = await post(`${authedBase}/api/invites/redeem`, { code: messy });
+      expect(res.status).toBe(201);
+    });
+
+    it('rejects an invalid code with 404', async () => {
+      const res = await post(`${authedBase}/api/invites/redeem`, { code: 'AAAA-AAAA' });
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects malformed code with 400', async () => {
+      const res = await post(`${authedBase}/api/invites/redeem`, { code: 'short' });
+      expect(res.status).toBe(400);
+    });
+
+    it('redeem endpoint requires no auth header', async () => {
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+      // Note: NO token passed
+      const res = await post(`${authedBase}/api/invites/redeem`, { code });
+      expect(res.status).toBe(201);
+    });
+
+    it('join token can register a new agent', async () => {
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+      const redeem = await post(`${authedBase}/api/invites/redeem`, { code });
+      const { joinToken } = (await redeem.json()) as { joinToken: string };
+
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix-Claude#1', tool: 'claude-code', workspacePath: '/test' },
+        joinToken,
+      );
+      expect(reg.status).toBe(201);
+      const agent = (await reg.json()) as { id: string; agentToken: string };
+      expect(agent.id).toBeTruthy();
+      expect(agent.agentToken).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('join token can register MULTIPLE distinct agents (one per session)', async () => {
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+      const { joinToken } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code })
+      ).json()) as { joinToken: string };
+
+      const r1 = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix-A', tool: 'claude-code', workspacePath: '/a' },
+        joinToken,
+      );
+      const r2 = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix-B', tool: 'claude-code', workspacePath: '/b' },
+        joinToken,
+      );
+      const a1 = (await r1.json()) as { id: string };
+      const a2 = (await r2.json()) as { id: string };
+      expect(a1.id).not.toBe(a2.id);
+    });
+
+    it('per-agent token CANNOT register a new agent (only admin/bootstrap can)', async () => {
+      // Get an agent token via a join token
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+      const { joinToken } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code })
+      ).json()) as { joinToken: string };
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix', tool: 'claude-code', workspacePath: '/x' },
+        joinToken,
+      );
+      const { agentToken } = (await reg.json()) as { agentToken: string };
+
+      // Try to register a new agent using the agent token → 403
+      const reg2 = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Imposter', tool: 'claude-code', workspacePath: '/y' },
+        agentToken,
+      );
+      expect(reg2.status).toBe(403);
+    });
+
+    it('agent (peer) can mint an invite for a teammate', async () => {
+      // Bootstrap an agent through admin
+      const inviteRes = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await inviteRes.json()) as { code: string };
+      const { joinToken } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code })
+      ).json()) as { joinToken: string };
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix', tool: 'claude-code', workspacePath: '/x' },
+        joinToken,
+      );
+      const { agentToken } = (await reg.json()) as { agentToken: string };
+
+      // Peer creates an invite using their agent token
+      const peerInvite = await post(
+        `${authedBase}/api/invites`,
+        { label: 'For Marie' },
+        agentToken,
+      );
+      expect(peerInvite.status).toBe(201);
+    });
+
+    it('admin can revoke an agents invite', async () => {
+      // Set up agent
+      const ai = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code: ai_code } = (await ai.json()) as { code: string };
+      const { joinToken } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code: ai_code })
+      ).json()) as { joinToken: string };
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'X', tool: 'claude-code', workspacePath: '/x' },
+        joinToken,
+      );
+      const { agentToken } = (await reg.json()) as { agentToken: string };
+
+      // Agent creates invite
+      const peerInvite = await post(`${authedBase}/api/invites`, {}, agentToken);
+      const { code: peerCode } = (await peerInvite.json()) as { code: string };
+
+      // Admin revokes it
+      const revRes = await fetch(`${authedBase}/api/invites/${peerCode}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer admin-secret' },
+      });
+      expect(revRes.status).toBe(200);
+    });
+
+    it('invite quota: agent cannot exceed max outstanding invites (5)', async () => {
+      // Set up agent
+      const ai = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await ai.json()) as { code: string };
+      const { joinToken } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code })
+      ).json()) as { joinToken: string };
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix', tool: 'claude-code', workspacePath: '/x' },
+        joinToken,
+      );
+      const { agentToken } = (await reg.json()) as { agentToken: string };
+
+      // Mint 5 invites — all OK
+      for (let i = 0; i < 5; i++) {
+        const r = await post(`${authedBase}/api/invites`, {}, agentToken);
+        expect(r.status).toBe(201);
+      }
+      // 6th → 429
+      const r6 = await post(`${authedBase}/api/invites`, {}, agentToken);
+      expect(r6.status).toBe(429);
+    });
+
+    it('admin lists ALL invites; agent lists only own', async () => {
+      // Admin creates one
+      const a1 = await post(`${authedBase}/api/invites`, { label: 'Admin' }, 'admin-secret');
+      const { code: c1 } = (await a1.json()) as { code: string };
+
+      // Agent creates one
+      const ai = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code: ic } = (await ai.json()) as { code: string };
+      const { joinToken } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code: ic })
+      ).json()) as { joinToken: string };
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Felix', tool: 'claude-code', workspacePath: '/x' },
+        joinToken,
+      );
+      const { agentToken } = (await reg.json()) as { agentToken: string };
+      const a2 = await post(`${authedBase}/api/invites`, { label: 'Peer' }, agentToken);
+      const { code: c2 } = (await a2.json()) as { code: string };
+
+      // Admin sees both
+      const adminList = (await (await get(`${authedBase}/api/invites`, 'admin-secret')).json()) as {
+        code: string;
+      }[];
+      const adminCodes = adminList.map((i) => i.code);
+      expect(adminCodes).toContain(c1);
+      expect(adminCodes).toContain(c2);
+
+      // Agent sees only their own
+      const agentList = (await (await get(`${authedBase}/api/invites`, agentToken)).json()) as {
+        code: string;
+      }[];
+      const agentCodes = agentList.map((i) => i.code);
+      expect(agentCodes).toContain(c2);
+      expect(agentCodes).not.toContain(c1);
+    });
+
+    it('revoking a join token blocks subsequent registers', async () => {
+      const ai = await post(`${authedBase}/api/invites`, {}, 'admin-secret');
+      const { code } = (await ai.json()) as { code: string };
+      const { joinToken, joinTokenId } = (await (
+        await post(`${authedBase}/api/invites/redeem`, { code })
+      ).json()) as { joinToken: string; joinTokenId: string };
+
+      // First register works
+      const r1 = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A', tool: 'claude-code', workspacePath: '/x' },
+        joinToken,
+      );
+      expect(r1.status).toBe(201);
+
+      // Admin revokes the token
+      const rev = await fetch(`${authedBase}/api/join-tokens/${joinTokenId}`, {
+        method: 'DELETE',
+        headers: { Authorization: 'Bearer admin-secret' },
+      });
+      expect(rev.status).toBe(200);
+
+      // Subsequent register fails
+      const r2 = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B', tool: 'claude-code', workspacePath: '/y' },
+        joinToken,
+      );
+      expect(r2.status).toBe(403);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Rate limiting
   // -----------------------------------------------------------------------
 

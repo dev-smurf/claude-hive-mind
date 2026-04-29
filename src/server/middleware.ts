@@ -6,6 +6,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Config } from '../config.js';
 import type { AgentRegistry } from '../services/agent-registry.js';
+import type { InviteService } from '../services/invites.js';
 import { logger } from '../util/logger.js';
 
 /**
@@ -26,13 +27,15 @@ export function safeCompare(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Authentication mode for the current request. */
-export type AuthMode = 'admin' | 'agent';
+export type AuthMode = 'admin' | 'agent' | 'bootstrap';
 
 /** Properties added to req by authMiddleware. */
 export interface AuthContext {
   authMode: AuthMode;
   /** When authMode === 'agent', the ID of the authenticated agent. */
   authenticatedAgentId?: string;
+  /** When authMode === 'bootstrap', the join_token row id. */
+  joinTokenId?: string;
 }
 
 declare module 'express-serve-static-core' {
@@ -57,7 +60,11 @@ declare module 'express-serve-static-core' {
  *
  * Returns 401 if no/malformed header, 403 if token is invalid.
  */
-export function authMiddleware(config: Config, registry: AgentRegistry): RequestHandler {
+export function authMiddleware(
+  config: Config,
+  registry: AgentRegistry,
+  invites: InviteService,
+): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!config.authEnabled) {
       // Auth disabled → grant admin so per-route checks pass through.
@@ -86,6 +93,15 @@ export function authMiddleware(config: Config, registry: AgentRegistry): Request
     const agent = registry.getAgentByToken(token);
     if (agent) {
       req.auth = { authMode: 'agent', authenticatedAgentId: agent.id };
+      next();
+      return;
+    }
+
+    // Third check: bootstrap (join) token — only allowed on routes that
+    // explicitly opt in via `requireBootstrap` / `requireBootstrapOrAdmin`.
+    const joinToken = invites.validateJoinToken(token);
+    if (joinToken) {
+      req.auth = { authMode: 'bootstrap', joinTokenId: joinToken.id };
       next();
       return;
     }
@@ -155,6 +171,36 @@ export function requireAdmin(req: Request, res: Response): boolean {
 /** True iff the request is authenticated as admin (not a per-agent token). */
 export function isAdmin(req: Request): boolean {
   return req.auth?.authMode === 'admin';
+}
+
+/**
+ * Allow either admin OR a bootstrap (join) token. Used by `register` so a
+ * peer with a join token can register a fresh agent for their session.
+ */
+export function requireBootstrapOrAdmin(req: Request, res: Response): boolean {
+  const auth = req.auth;
+  if (!auth) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return false;
+  }
+  if (auth.authMode === 'admin' || auth.authMode === 'bootstrap') return true;
+  res.status(403).json({ error: 'Admin or join token required' });
+  return false;
+}
+
+/**
+ * Allow admin OR an agent token. Used by `create invite` so peers can
+ * generate invites for their teammates.
+ */
+export function requireAuthAgent(req: Request, res: Response): boolean {
+  const auth = req.auth;
+  if (!auth) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return false;
+  }
+  if (auth.authMode === 'admin' || auth.authMode === 'agent') return true;
+  res.status(403).json({ error: 'Token does not authorize this operation' });
+  return false;
 }
 
 // ---------------------------------------------------------------------------

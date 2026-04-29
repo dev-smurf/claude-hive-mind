@@ -18,6 +18,7 @@ import { TaskQueue } from '../services/task-queue.js';
 import { KnowledgeStore } from '../services/knowledge-store.js';
 import { DecisionLog } from '../services/decision-log.js';
 import { ConflictDetector } from '../services/conflict-detector.js';
+import { InviteService } from '../services/invites.js';
 import { createRoutes } from './routes.js';
 import { authMiddleware, rateLimitMiddleware, errorHandler } from './middleware.js';
 import { WsHandler } from './ws-handler.js';
@@ -46,6 +47,7 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   const knowledge = new KnowledgeStore(store, bus, config);
   const decisions = new DecisionLog(store, bus);
   const conflicts = new ConflictDetector(store, bus);
+  const invites = new InviteService(store);
 
   // Wire cross-service dependency (avoids circular import)
   registry.setTaskQueue(taskQueue);
@@ -90,8 +92,16 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   // Rate limiting
   app.use('/api', rateLimitMiddleware(config));
 
-  // Auth (applied to /api routes only)
-  app.use('/api', authMiddleware(config, registry));
+  // Auth (applied to /api routes only) — except /api/invites/redeem which
+  // is the unauthenticated onboarding entry point (rate-limited heavily).
+  app.use('/api', (req, res, next) => {
+    if (req.method === 'POST' && req.path === '/invites/redeem') {
+      // Skip auth for this single endpoint.
+      next();
+      return;
+    }
+    authMiddleware(config, registry, invites)(req, res, next);
+  });
 
   // API routes
   const routes = createRoutes({
@@ -101,6 +111,7 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     knowledge,
     decisions,
     conflicts,
+    invites,
   });
   app.use(routes);
 
@@ -153,6 +164,19 @@ export function createHiveMindServer(config: Config): HiveMindServer {
               knowledge.cleanupExpired();
             } catch (err: unknown) {
               logger.error('cleanup', 'knowledge.cleanupExpired failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }, config.staleAgentCleanupMs).unref(),
+        );
+
+        // Periodically drop expired-but-unused invites.
+        cleanupTimers.push(
+          setInterval(() => {
+            try {
+              invites.cleanupExpired();
+            } catch (err: unknown) {
+              logger.error('cleanup', 'invites.cleanupExpired failed', {
                 error: err instanceof Error ? err.message : String(err),
               });
             }

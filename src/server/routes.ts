@@ -19,6 +19,12 @@ import type { KnowledgeStore } from '../services/knowledge-store.js';
 import type { DecisionLog } from '../services/decision-log.js';
 import type { ConflictDetector } from '../services/conflict-detector.js';
 import {
+  InviteNotRedeemableError,
+  InviteQuotaExceededError,
+  type InviteService,
+  normalizeInviteCode,
+} from '../services/invites.js';
+import {
   agentId,
   taskId,
   conflictId,
@@ -32,7 +38,14 @@ import {
 } from '../schemas.js';
 import type { AgentRecord, TaskId } from '../types.js';
 import { InvalidPathError } from '../util/path-normalize.js';
-import { isAdmin, requireAdmin, requireAgentMatch, requireOwnerOrAdmin } from './middleware.js';
+import {
+  isAdmin,
+  requireAdmin,
+  requireAgentMatch,
+  requireAuthAgent,
+  requireBootstrapOrAdmin,
+  requireOwnerOrAdmin,
+} from './middleware.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,6 +58,7 @@ export interface RouteServices {
   readonly knowledge: KnowledgeStore;
   readonly decisions: DecisionLog;
   readonly conflicts: ConflictDetector;
+  readonly invites: InviteService;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +162,7 @@ interface StateCache {
 
 export function createRoutes(services: RouteServices): Router {
   const router = Router();
-  const { registry, fileOwnership, taskQueue, knowledge, decisions, conflicts } = services;
+  const { registry, fileOwnership, taskQueue, knowledge, decisions, conflicts, invites } = services;
 
   // Per-auth-context cache so admin-only data never leaks to agent tokens.
   const stateCache = new Map<string, StateCache>();
@@ -158,6 +172,10 @@ export function createRoutes(services: RouteServices): Router {
   // -------------------------------------------------------------------------
 
   router.post('/api/agents/register', (req: Request, res: Response) => {
+    // Register accepts admin OR a bootstrap (join) token. Per-agent tokens
+    // cannot register new agents — that would be self-replication.
+    if (!requireBootstrapOrAdmin(req, res)) return;
+
     const body = parseBody(req, res, registerAgentBodySchema);
     if (!body) return;
 
@@ -168,6 +186,11 @@ export function createRoutes(services: RouteServices): Router {
       ...(body.currentBranch !== undefined ? { currentBranch: body.currentBranch } : {}),
       ...(body.repoUrl !== undefined ? { repoUrl: body.repoUrl } : {}),
     });
+
+    // Track that a join token was used to register an agent (for audit).
+    if (req.auth?.authMode === 'bootstrap' && req.auth.joinTokenId) {
+      invites.recordJoinTokenUse(req.auth.joinTokenId);
+    }
 
     // The agent token is returned only here — the client must capture it
     // and use it for subsequent requests via the Authorization header.
@@ -538,6 +561,110 @@ export function createRoutes(services: RouteServices): Router {
     const ok = conflicts.resolve(cid);
     if (!ok) {
       res.status(409).json({ error: 'Conflict already resolved' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Invites — onboarding flow
+  // -------------------------------------------------------------------------
+
+  /** Anyone authenticated (admin OR agent) can mint an invite. */
+  router.post('/api/invites', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+
+    const body = req.body as { label?: unknown; ttlMs?: unknown };
+    const label = typeof body.label === 'string' ? body.label.slice(0, 200) : undefined;
+    const ttlMs = typeof body.ttlMs === 'number' && body.ttlMs > 0 ? body.ttlMs : undefined;
+
+    const auth = req.auth;
+    const createdBy = auth?.authMode === 'admin' ? 'admin' : (auth?.authenticatedAgentId ?? '');
+    if (!createdBy) {
+      res.status(401).json({ error: 'Not authenticated' });
+      return;
+    }
+
+    try {
+      const result = invites.create({
+        createdBy,
+        ...(label !== undefined ? { label } : {}),
+        ...(ttlMs !== undefined ? { ttlMs } : {}),
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      if (err instanceof InviteQuotaExceededError) {
+        res.status(429).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  /**
+   * Redeem an invite. NO AUTH REQUIRED — that's the point: a fresh peer
+   * with only the code can claim a join token. Heavy rate-limit applied
+   * via the global rateLimitMiddleware. Single-use; expires fast.
+   */
+  router.post('/api/invites/redeem', (req: Request, res: Response) => {
+    const body = req.body as { code?: unknown };
+    const rawCode = typeof body.code === 'string' ? body.code : '';
+    const code = normalizeInviteCode(rawCode);
+    if (!code) {
+      res.status(400).json({ error: 'Invalid code format' });
+      return;
+    }
+
+    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    try {
+      const result = invites.redeem({ code, remoteIp: ip });
+      res.status(201).json(result);
+    } catch (err) {
+      if (err instanceof InviteNotRedeemableError) {
+        res.status(404).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  });
+
+  /** List invites visible to caller (admin: all; agent: own). */
+  router.get('/api/invites', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+    const scope = isAdmin(req) ? 'admin' : (req.auth?.authenticatedAgentId ?? '');
+    res.json(invites.list(scope));
+  });
+
+  /** Revoke an invite. Admin: any; agent: own. */
+  router.delete('/api/invites/:code', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+    const code = normalizeInviteCode(param(req, 'code'));
+    if (!code) {
+      res.status(400).json({ error: 'Invalid code format' });
+      return;
+    }
+    const scope = isAdmin(req) ? 'admin' : (req.auth?.authenticatedAgentId ?? '');
+    const ok = invites.revoke(code, scope);
+    if (!ok) {
+      res.status(404).json({ error: 'Invite not found or not yours' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  /** Admin-only: list all join tokens (for audit / revocation UI). */
+  router.get('/api/join-tokens', (req: Request, res: Response) => {
+    if (!requireAdmin(req, res)) return;
+    res.json(invites.listJoinTokens());
+  });
+
+  /** Admin-only: revoke a join token by id. */
+  router.delete('/api/join-tokens/:id', (req: Request, res: Response) => {
+    if (!requireAdmin(req, res)) return;
+    const id = param(req, 'id');
+    const ok = invites.revokeJoinToken(id);
+    if (!ok) {
+      res.status(404).json({ error: 'Join token not found' });
       return;
     }
     res.json({ ok: true });

@@ -331,6 +331,28 @@ const SCHEMA = `
     FOREIGN KEY (agent_b) REFERENCES agents(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS invites (
+    code         TEXT PRIMARY KEY,
+    created_by   TEXT NOT NULL,        -- 'admin' or agent_id
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    consumed_at  TEXT,
+    consumed_by  TEXT,                 -- join_token id once redeemed
+    consumed_ip  TEXT,
+    label        TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS join_tokens (
+    id            TEXT PRIMARY KEY,    -- short ID for revocation
+    token_hash    TEXT NOT NULL UNIQUE,-- sha256 of the bearer token
+    created_at    TEXT NOT NULL,
+    invite_code   TEXT,                -- the invite that issued this
+    label         TEXT,                -- "Felix's machine"
+    last_used_at  TEXT,
+    agent_count   INTEGER NOT NULL DEFAULT 0,
+    revoked       INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
   CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(agent_token);
   CREATE INDEX IF NOT EXISTS idx_file_ownership_agent ON file_ownership(agent_id);
@@ -340,6 +362,8 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge(agent_id);
   CREATE INDEX IF NOT EXISTS idx_decisions_category ON decisions(category);
   CREATE INDEX IF NOT EXISTS idx_conflicts_resolved ON conflicts(resolved);
+  CREATE INDEX IF NOT EXISTS idx_invites_expires ON invites(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_join_tokens_hash ON join_tokens(token_hash);
 `;
 
 /**
@@ -851,6 +875,113 @@ export class Store {
   }
 
   // -------------------------------------------------------------------------
+  // Invites
+  // -------------------------------------------------------------------------
+
+  insertInvite(invite: InviteRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO invites (code, created_by, created_at, expires_at, label)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(invite.code, invite.created_by, invite.created_at, invite.expires_at, invite.label);
+  }
+
+  /** Lookup a non-expired, non-consumed invite. Returns row or undefined. */
+  getRedeemableInvite(code: string, now: string): InviteRow | undefined {
+    return this.db
+      .prepare(
+        `SELECT * FROM invites
+         WHERE code = ? AND consumed_at IS NULL AND expires_at > ?`,
+      )
+      .get(code, now) as InviteRow | undefined;
+  }
+
+  markInviteConsumed(code: string, joinTokenId: string, ip: string, now: string): void {
+    this.db
+      .prepare(
+        `UPDATE invites SET consumed_at = ?, consumed_by = ?, consumed_ip = ?
+         WHERE code = ? AND consumed_at IS NULL`,
+      )
+      .run(now, joinTokenId, ip, code);
+  }
+
+  deleteInvite(code: string): boolean {
+    const r = this.db.prepare('DELETE FROM invites WHERE code = ?').run(code);
+    return r.changes > 0;
+  }
+
+  /** All invites. Optionally filter by creator. */
+  getAllInvites(createdBy?: string): readonly InviteRow[] {
+    if (createdBy === undefined) {
+      return this.db.prepare('SELECT * FROM invites ORDER BY created_at DESC').all() as InviteRow[];
+    }
+    return this.db
+      .prepare('SELECT * FROM invites WHERE created_by = ? ORDER BY created_at DESC')
+      .all(createdBy) as InviteRow[];
+  }
+
+  /** Count outstanding (non-consumed, non-expired) invites for a creator. */
+  countOutstandingInvitesBy(createdBy: string, now: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) as count FROM invites
+         WHERE created_by = ? AND consumed_at IS NULL AND expires_at > ?`,
+      )
+      .get(createdBy, now) as { count: number };
+    return row.count;
+  }
+
+  deleteExpiredInvites(now: string): number {
+    return this.db
+      .prepare('DELETE FROM invites WHERE consumed_at IS NULL AND expires_at <= ?')
+      .run(now).changes;
+  }
+
+  // -------------------------------------------------------------------------
+  // Join tokens
+  // -------------------------------------------------------------------------
+
+  insertJoinToken(token: JoinTokenRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO join_tokens (id, token_hash, created_at, invite_code, label)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(token.id, token.token_hash, token.created_at, token.invite_code, token.label);
+  }
+
+  getJoinTokenByHash(tokenHash: string): JoinTokenRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM join_tokens WHERE token_hash = ? AND revoked = 0')
+      .get(tokenHash) as JoinTokenRow | undefined;
+  }
+
+  getJoinTokenById(id: string): JoinTokenRow | undefined {
+    return this.db.prepare('SELECT * FROM join_tokens WHERE id = ?').get(id) as
+      | JoinTokenRow
+      | undefined;
+  }
+
+  getAllJoinTokens(): readonly JoinTokenRow[] {
+    return this.db
+      .prepare('SELECT * FROM join_tokens ORDER BY created_at DESC')
+      .all() as JoinTokenRow[];
+  }
+
+  recordJoinTokenUse(id: string, now: string): void {
+    this.db
+      .prepare(
+        'UPDATE join_tokens SET last_used_at = ?, agent_count = agent_count + 1 WHERE id = ?',
+      )
+      .run(now, id);
+  }
+
+  revokeJoinToken(id: string): boolean {
+    return this.db.prepare('UPDATE join_tokens SET revoked = 1 WHERE id = ?').run(id).changes > 0;
+  }
+
+  // -------------------------------------------------------------------------
   // Transactions
   // -------------------------------------------------------------------------
 
@@ -861,4 +992,30 @@ export class Store {
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Invite & Join Token row types (exported for service layer)
+// ---------------------------------------------------------------------------
+
+export interface InviteRow {
+  code: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  consumed_at: string | null;
+  consumed_by: string | null;
+  consumed_ip: string | null;
+  label: string | null;
+}
+
+export interface JoinTokenRow {
+  id: string;
+  token_hash: string;
+  created_at: string;
+  invite_code: string | null;
+  label: string | null;
+  last_used_at: string | null;
+  agent_count: number;
+  revoked: number;
 }
