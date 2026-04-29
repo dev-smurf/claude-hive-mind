@@ -127,9 +127,9 @@ program
 ╭──────────────────────────────────────────────────────────╮
 │  Claude Hive Mind is running                             │
 │                                                          │
-│  Server   : ${localUrl.padEnd(40)}│
-│  Dashboard: ${localUrl.padEnd(40)}│
-${publicLine}│                                                          │
+│  Server   : ${localUrl.padEnd(40)}                       │
+│  Dashboard: ${localUrl.padEnd(40)}                       │
+│  ${publicLine}                                           │
 │  Invite a teammate:                                      │
 │    chm invite                                            │
 ╰──────────────────────────────────────────────────────────╯
@@ -193,15 +193,15 @@ program
 
     process.stdout.write(`
 ┌─────────────────────────────────────────────────────────┐
-│  Invite created${opts.label ? ` for ${opts.label}` : ''}                                        │
+│  Invite created${opts.label ? ` for ${opts.label}` : ''}│
 │                                                         │
-│  Code:  ${data.code.padEnd(48)}│
-│  URL:   ${url.padEnd(48)}│
+│  Code:  ${data.code.padEnd(48)}                         │
+│  URL:   ${url.padEnd(48)}                               │
 │                                                         │
-│  Share with your teammate. They run:                   │
-│    claude-hive-mind join ${url.padEnd(28)}│
+│  Share with your teammate. They run:                    │
+│    claude-hive-mind join ${url.padEnd(28)}              │
 │                                                         │
-│  Expires in ${String(ttlMin).padEnd(2)} min. Single use.                       │
+│  Expires in ${String(ttlMin).padEnd(2)} min. Single use.│
 └─────────────────────────────────────────────────────────┘
 `);
   });
