@@ -11,6 +11,7 @@
  *   invites          — Manage outstanding invites (list / revoke)
  */
 
+import { randomBytes } from 'node:crypto';
 import os from 'node:os';
 import { Command } from 'commander';
 import { loadConfig, validateConfig } from './config.js';
@@ -44,7 +45,126 @@ program
   .version('0.1.0');
 
 // ---------------------------------------------------------------------------
-// serve — start the central server
+// start — one-shot: serve + tunnel + invite, ready for teammates
+// ---------------------------------------------------------------------------
+
+program
+  .command('start')
+  .description(
+    'One-shot launcher: starts the server, opens a public cloudflared tunnel, ' +
+      'mints an invite, and prints a single URL you can share with teammates.',
+  )
+  .option('-p, --port <port>', 'Port to listen on', '7777')
+  .option('--no-public', 'LAN-only mode (skip the public cloudflared tunnel)')
+  .option('-l, --label <label>', 'Optional label for the invite (e.g. "demo run")')
+  .option('--ttl <minutes>', 'How long the invite stays valid', '60')
+  .action(
+    async (opts: {
+      port: string;
+      public: boolean;
+      label?: string;
+      ttl: string;
+    }) => {
+      // Auto-generate an ephemeral admin token if the user didn't set one.
+      // This is what makes `chm start` truly one-shot — no env var dance.
+      if (!process.env.CHM_AUTH_TOKEN) {
+        process.env.CHM_AUTH_TOKEN = randomBytes(32).toString('hex');
+      }
+      process.env.CHM_PORT = opts.port;
+      process.env.CHM_HOST = '0.0.0.0';
+
+      let tunnel: TunnelHandle | null = null;
+      if (opts.public) {
+        try {
+          tunnel = await startQuickTunnel(parseInt(opts.port, 10), {
+            onProgress: (msg) => {
+              process.stdout.write(`  ${msg}\n`);
+            },
+          });
+          process.env.CHM_PUBLIC_URL = tunnel.url;
+        } catch (err) {
+          process.stderr.write(
+            `  Tunnel failed (${err instanceof Error ? err.message : String(err)}); ` +
+              `continuing in LAN-only mode.\n`,
+          );
+        }
+      }
+
+      const config = loadConfig();
+      setLogLevel(config.logLevel);
+      for (const warning of validateConfig(config)) {
+        logger.warn('config', warning);
+      }
+
+      const server = createHiveMindServer(config);
+      await server.start();
+
+      // Mint a fresh invite via the local HTTP API. Single-use; if a teammate
+      // joins and another wants to follow, the host runs `chm invite` again.
+      const ttlMs = Math.max(1, parseInt(opts.ttl, 10)) * 60 * 1000;
+      let inviteUrl: string | null = null;
+      try {
+        const res = await fetch(`http://localhost:${opts.port}/api/invites`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${config.authToken}`,
+          },
+          body: JSON.stringify({
+            ttlMs,
+            ...(opts.label !== undefined ? { label: opts.label } : {}),
+          }),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as { url?: string; code: string };
+          inviteUrl =
+            data.url ??
+            formatInviteUrl(tunnel?.url ?? `http://localhost:${opts.port}`, data.code);
+        }
+      } catch (err) {
+        logger.warn('cli', 'Failed to auto-mint invite', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+
+      let shuttingDown = false;
+      const shutdown = async (): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        if (tunnel) tunnel.stop();
+        await server.stop();
+        process.exit(0);
+      };
+      process.on('SIGINT', () => void shutdown());
+      process.on('SIGTERM', () => void shutdown());
+
+      const dashboardUrl = tunnel?.url ?? `http://localhost:${opts.port}`;
+      const ttlMin = Math.round(ttlMs / 60_000);
+      const shareLine = inviteUrl ?? '(invite mint failed — run `chm invite` manually)';
+      const accessHint = tunnel ? 'public · over the internet' : 'LAN only';
+      const ttlHint = `single-use · ${String(ttlMin)} min`;
+
+      process.stdout.write(`
+╭──────────────────────────────────────────────────────────────────╮
+│  Claude Hive Mind                                                │
+│                                                                  │
+│  Dashboard (you):                                                │
+│    ${dashboardUrl.padEnd(62)}│
+│    ${accessHint.padEnd(62)}│
+│                                                                  │
+│  Share this with a teammate (their AI calls hive_join with it):  │
+│    ${shareLine.padEnd(62)}│
+│    ${ttlHint.padEnd(62)}│
+│                                                                  │
+│  Need another invite?  chm invite                                │
+│  Stop the hive:        Ctrl+C                                    │
+╰──────────────────────────────────────────────────────────────────╯
+`);
+    },
+  );
+
+// ---------------------------------------------------------------------------
+// serve — start the central server (advanced: explicit, no tunnel by default)
 // ---------------------------------------------------------------------------
 
 program
