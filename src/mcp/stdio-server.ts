@@ -62,7 +62,12 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
   // eslint-disable-next-line @typescript-eslint/no-deprecated
   const server = new Server(
     { name: 'claude-hive-mind', version: '0.1.0' },
-    { capabilities: { tools: {} } },
+    // listChanged: true tells the host (Claude Code, Cursor, etc.) that we
+    // may add/remove tools at runtime — specifically, the post-connect
+    // hive_* toolset only becomes available after hive_join/hive_connect.
+    // We send notifications/tools/list_changed each time that boundary
+    // crosses, so the host re-fetches the list.
+    { capabilities: { tools: { listChanged: true } } },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, () => {
@@ -84,7 +89,7 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
-      const result = await dispatchTool(session, config, name, args ?? {});
+      const result = await dispatchTool(session, config, server, name, args ?? {});
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
       };
@@ -154,6 +159,7 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
 async function dispatchTool(
   session: SessionState,
   config: StdioServerConfig,
+  server: Server,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -162,11 +168,11 @@ async function dispatchTool(
     case 'hive_list_saved':
       return handleListSaved();
     case 'hive_connect':
-      return handleConnect(session, config, args);
+      return handleConnect(session, config, server, args);
     case 'hive_join':
-      return handleJoin(session, config, args);
+      return handleJoin(session, config, server, args);
     case 'hive_disconnect':
-      return handleDisconnect(session);
+      return handleDisconnect(session, server);
     case 'hive_session_status':
       return handleSessionStatus(session);
   }
@@ -303,6 +309,7 @@ async function handleListSaved(): Promise<unknown> {
 async function handleConnect(
   session: SessionState,
   config: StdioServerConfig,
+  server: Server,
   args: Record<string, unknown>,
 ): Promise<unknown> {
   if (session.client) {
@@ -342,6 +349,9 @@ async function handleConnect(
 
   session.client = client;
   session.hiveName = name;
+
+  // Tell the host the post-connect hive_* tools are now available.
+  await server.sendToolListChanged();
 
   logger.info('mcp', 'Session joined hive', {
     hive: name,
@@ -395,6 +405,7 @@ function assertSafeHiveTarget(serverUrl: string): void {
 async function handleJoin(
   session: SessionState,
   config: StdioServerConfig,
+  server: Server,
   args: Record<string, unknown>,
 ): Promise<unknown> {
   if (session.client) {
@@ -478,6 +489,9 @@ async function handleJoin(
   session.client = client;
   session.hiveName = hiveName;
 
+  // Tell the host the post-connect hive_* tools are now available.
+  await server.sendToolListChanged();
+
   logger.info('mcp', 'Session joined hive via invite', {
     hive: hiveName,
     url: serverUrl,
@@ -495,7 +509,7 @@ async function handleJoin(
   };
 }
 
-async function handleDisconnect(session: SessionState): Promise<unknown> {
+async function handleDisconnect(session: SessionState, server: Server): Promise<unknown> {
   if (!session.client) {
     return { connected: false, message: 'Not connected to any hive.' };
   }
@@ -503,6 +517,10 @@ async function handleDisconnect(session: SessionState): Promise<unknown> {
   await session.client.disconnect();
   session.client = null;
   session.hiveName = null;
+
+  // Tell the host the post-connect hive_* tools are no longer available.
+  await server.sendToolListChanged();
+
   logger.info('mcp', 'Session disconnected from hive', { hive: previousHive });
   return {
     connected: false,
