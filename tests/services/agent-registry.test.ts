@@ -107,15 +107,21 @@ describe('register', () => {
   });
 
   it('persists the agent in the store', () => {
-    const agent = registry.register(GABRIEL_INPUT);
+    const { agentToken: _t, ...agent } = registry.register(GABRIEL_INPUT);
     const stored = store.getAgent(agent.id);
     expect(stored).toEqual(agent);
   });
 
   it('emits agent_joined event', () => {
-    const agent = registry.register(GABRIEL_INPUT);
+    const { agentToken: _t, ...agent } = registry.register(GABRIEL_INPUT);
     expect(emitted).toHaveLength(1);
     expect(emitted[0]).toEqual({ type: 'agent_joined', agent });
+  });
+
+  it('returns a non-empty agent token at registration', () => {
+    const result = registry.register(GABRIEL_INPUT);
+    expect(typeof result.agentToken).toBe('string');
+    expect(result.agentToken.length).toBeGreaterThanOrEqual(32);
   });
 
   it('generates unique IDs for each registration', () => {
@@ -335,7 +341,7 @@ describe('remove', () => {
 
 describe('getAgent', () => {
   it('returns the agent if it exists', () => {
-    const agent = registry.register(GABRIEL_INPUT);
+    const { agentToken: _t, ...agent } = registry.register(GABRIEL_INPUT);
     expect(registry.getAgent(agent.id)).toEqual(agent);
   });
 

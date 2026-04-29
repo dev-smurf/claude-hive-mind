@@ -19,6 +19,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { HiveMindClient } from './client.js';
 import { TOOL_DEFINITIONS } from './tools.js';
 import { zodToJsonSchema } from '../util/zod-to-json-schema.js';
+import { logger } from '../util/logger.js';
 
 export interface StdioServerConfig {
   readonly serverUrl: string;
@@ -42,7 +43,10 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
 
   // Register with the central server
   const myAgentId = await client.connect();
-  console.error(`[HiveMind MCP] Connected as ${config.displayName} (${myAgentId})`);
+  logger.info('mcp', 'Connected to hive', {
+    displayName: config.displayName,
+    agentId: myAgentId,
+  });
 
   // Create MCP server
   // eslint-disable-next-line @typescript-eslint/no-deprecated
@@ -97,28 +101,46 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
 // Tool dispatch
 // ---------------------------------------------------------------------------
 
+/** Look up a registered tool by name. */
+function findTool(toolName: string): (typeof TOOL_DEFINITIONS)[number] {
+  const tool = TOOL_DEFINITIONS.find((t) => t.name === toolName);
+  if (!tool) {
+    throw new Error(`Unknown tool: ${toolName}`);
+  }
+  return tool;
+}
+
 async function executeToolCall(
   client: HiveMindClient,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
+  // Validate args against the declared Zod schema before any cast.
+  const tool = findTool(toolName);
+  const parsed = tool.inputSchema.safeParse(args);
+  if (!parsed.success) {
+    const details = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+    throw new Error(`Invalid arguments for ${toolName}: ${details}`);
+  }
+  const data = parsed.data as Record<string, unknown>;
+
   switch (toolName) {
     case 'hive_status':
       return client.getStatus();
 
     case 'hive_claim_file':
       return client.claimFile(
-        args.filePath as string,
-        args.mode as string,
-        args.taskId as string | undefined,
-        args.branch as string | undefined,
+        data.filePath as string,
+        data.mode as string,
+        data.taskId as string | undefined,
+        data.branch as string | undefined,
       );
 
     case 'hive_release_file':
-      return client.releaseFile(args.filePath as string);
+      return client.releaseFile(data.filePath as string);
 
     case 'hive_check_file':
-      return client.checkFile(args.filePath as string);
+      return client.checkFile(data.filePath as string);
 
     case 'hive_create_task': {
       const input: {
@@ -128,23 +150,23 @@ async function executeToolCall(
         filePaths?: string[];
         dependsOn?: string[];
       } = {
-        title: args.title as string,
-        description: args.description as string,
+        title: data.title as string,
+        description: data.description as string,
       };
-      if (args.priority !== undefined) input.priority = args.priority as string;
-      if (args.filePaths !== undefined) input.filePaths = args.filePaths as string[];
-      if (args.dependsOn !== undefined) input.dependsOn = args.dependsOn as string[];
+      if (data.priority !== undefined) input.priority = data.priority as string;
+      if (data.filePaths !== undefined) input.filePaths = data.filePaths as string[];
+      if (data.dependsOn !== undefined) input.dependsOn = data.dependsOn as string[];
       return client.createTask(input);
     }
 
     case 'hive_assign_task':
-      return client.assignTask(args.taskId as string);
+      return client.assignTask(data.taskId as string);
 
     case 'hive_complete_task':
-      return client.completeTask(args.taskId as string);
+      return client.completeTask(data.taskId as string);
 
     case 'hive_fail_task':
-      return client.failTask(args.taskId as string);
+      return client.failTask(data.taskId as string);
 
     case 'hive_share_knowledge': {
       const kInput: {
@@ -153,32 +175,32 @@ async function executeToolCall(
         sourceHash?: string;
         ttlSeconds?: number;
       } = {
-        key: args.key as string,
-        value: args.value as string,
+        key: data.key as string,
+        value: data.value as string,
       };
-      if (args.sourceHash !== undefined) kInput.sourceHash = args.sourceHash as string;
-      if (args.ttlSeconds !== undefined) kInput.ttlSeconds = args.ttlSeconds as number;
+      if (data.sourceHash !== undefined) kInput.sourceHash = data.sourceHash as string;
+      if (data.ttlSeconds !== undefined) kInput.ttlSeconds = data.ttlSeconds as number;
       return client.shareKnowledge(kInput);
     }
 
     case 'hive_get_knowledge':
-      return client.getKnowledge(args.key as string);
+      return client.getKnowledge(data.key as string);
 
     case 'hive_log_decision':
       return client.logDecision({
-        category: args.category as string,
-        summary: args.summary as string,
-        rationale: args.rationale as string,
+        category: data.category as string,
+        summary: data.summary as string,
+        rationale: data.rationale as string,
       });
 
     case 'hive_get_conflicts':
       return client.getConflicts();
 
     case 'hive_resolve_conflict':
-      return client.resolveConflict(args.conflictId as string);
+      return client.resolveConflict(data.conflictId as string);
 
     case 'hive_update_branch':
-      return client.updateBranch(args.branch as string);
+      return client.updateBranch(data.branch as string);
 
     default:
       throw new Error(`Unknown tool: ${toolName}`);

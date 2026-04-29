@@ -3,18 +3,36 @@
  *
  * All domain operations are exposed as JSON endpoints.
  * The MCP tools and dashboard call these same endpoints.
+ *
+ * Boundary discipline: every body is parsed through a Zod schema.
+ * Routes that mutate a specific agent enforce per-agent token auth
+ * via `requireAgentMatch`.
  */
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
+import type { z } from 'zod';
 import type { AgentRegistry } from '../services/agent-registry.js';
 import type { FileOwnershipService } from '../services/file-ownership.js';
 import type { TaskQueue } from '../services/task-queue.js';
 import type { KnowledgeStore } from '../services/knowledge-store.js';
 import type { DecisionLog } from '../services/decision-log.js';
 import type { ConflictDetector } from '../services/conflict-detector.js';
-import { agentId, taskId, conflictId } from '../schemas.js';
-import type { AgentTool, DecisionCategory, OwnershipMode, TaskId, TaskPriority } from '../types.js';
+import {
+  agentId,
+  taskId,
+  conflictId,
+  registerAgentBodySchema,
+  updateBranchBodySchema,
+  claimFileBodySchema,
+  createTaskBodySchema,
+  assignTaskBodySchema,
+  shareKnowledgeBodySchema,
+  logDecisionBodySchema,
+} from '../schemas.js';
+import type { TaskId } from '../types.js';
+import { InvalidPathError } from '../util/path-normalize.js';
+import { requireAgentMatch } from './middleware.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -48,6 +66,54 @@ function queryParam(req: Request, name: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Parse request body through a Zod schema. On failure, send 400 with
+ * the validation error message and return null. Caller checks for null.
+ */
+function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | null {
+  const result = schema.safeParse(req.body);
+  if (!result.success) {
+    res.status(400).json({
+      error: 'Invalid request body',
+      details: result.error.issues.map((i) => ({
+        path: i.path.join('.'),
+        message: i.message,
+      })),
+    });
+    return null;
+  }
+  return result.data;
+}
+
+/**
+ * Wrap a sync route handler so InvalidPathError becomes 400 instead of 500.
+ * Other thrown errors propagate to the global error handler.
+ */
+function safe(handler: (req: Request, res: Response) => void) {
+  return (req: Request, res: Response): void => {
+    try {
+      handler(req, res);
+    } catch (err) {
+      if (err instanceof InvalidPathError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Snapshot cache for /api/state — short TTL to absorb dashboard polling.
+// ---------------------------------------------------------------------------
+
+const STATE_CACHE_TTL_MS = 1_000;
+
+interface StateCache {
+  generatedAt: number;
+  body: string;
+}
+
 // ---------------------------------------------------------------------------
 // Router factory
 // ---------------------------------------------------------------------------
@@ -56,37 +122,34 @@ export function createRoutes(services: RouteServices): Router {
   const router = Router();
   const { registry, fileOwnership, taskQueue, knowledge, decisions, conflicts } = services;
 
+  let stateCache: StateCache | null = null;
+
   // -------------------------------------------------------------------------
   // Agents
   // -------------------------------------------------------------------------
 
   router.post('/api/agents/register', (req: Request, res: Response) => {
-    const { displayName, tool, workspacePath, currentBranch, repoUrl } = req.body as {
-      displayName?: string;
-      tool?: string;
-      workspacePath?: string;
-      currentBranch?: string | null;
-      repoUrl?: string | null;
-    };
+    const body = parseBody(req, res, registerAgentBodySchema);
+    if (!body) return;
 
-    if (!displayName || !tool || !workspacePath) {
-      res.status(400).json({ error: 'Missing required fields: displayName, tool, workspacePath' });
-      return;
-    }
-
-    const agent = registry.register({
-      displayName,
-      tool: tool as AgentTool,
-      workspacePath,
-      ...(currentBranch !== undefined ? { currentBranch } : {}),
-      ...(repoUrl !== undefined ? { repoUrl } : {}),
+    const result = registry.register({
+      displayName: body.displayName,
+      tool: body.tool,
+      workspacePath: body.workspacePath,
+      ...(body.currentBranch !== undefined ? { currentBranch: body.currentBranch } : {}),
+      ...(body.repoUrl !== undefined ? { repoUrl: body.repoUrl } : {}),
     });
 
-    res.status(201).json(agent);
+    // The agent token is returned only here — the client must capture it
+    // and use it for subsequent requests via the Authorization header.
+    res.status(201).json(result);
   });
 
   router.post('/api/agents/:id/heartbeat', (req: Request, res: Response) => {
-    const ok = registry.heartbeat(agentId(param(req, 'id')));
+    const id = param(req, 'id');
+    if (!requireAgentMatch(req, res, id)) return;
+
+    const ok = registry.heartbeat(agentId(id));
     if (!ok) {
       res.status(404).json({ error: 'Agent not found' });
       return;
@@ -95,13 +158,13 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/agents/:id/branch', (req: Request, res: Response) => {
-    const { branch } = req.body as { branch?: string | null };
-    if (branch === undefined) {
-      res.status(400).json({ error: 'Missing required field: branch' });
-      return;
-    }
+    const id = param(req, 'id');
+    if (!requireAgentMatch(req, res, id)) return;
 
-    const ok = registry.updateBranch(agentId(param(req, 'id')), branch);
+    const body = parseBody(req, res, updateBranchBodySchema);
+    if (!body) return;
+
+    const ok = registry.updateBranch(agentId(id), body.branch);
     if (!ok) {
       res.status(404).json({ error: 'Agent not found' });
       return;
@@ -110,7 +173,10 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.delete('/api/agents/:id', (req: Request, res: Response) => {
-    const ok = registry.disconnect(agentId(param(req, 'id')));
+    const id = param(req, 'id');
+    if (!requireAgentMatch(req, res, id)) return;
+
+    const ok = registry.disconnect(agentId(id));
     if (!ok) {
       res.status(404).json({ error: 'Agent not found' });
       return;
@@ -135,71 +201,64 @@ export function createRoutes(services: RouteServices): Router {
   // Files
   // -------------------------------------------------------------------------
 
-  router.post('/api/files/claim', (req: Request, res: Response) => {
-    const {
-      filePath,
-      agentId: aid,
-      mode,
-      taskId: tid,
-      ttlMs,
-      branch,
-    } = req.body as {
-      filePath?: string;
-      agentId?: string;
-      mode?: string;
-      taskId?: string;
-      ttlMs?: number | null;
-      branch?: string | null;
-    };
+  router.post(
+    '/api/files/claim',
+    safe((req, res) => {
+      const body = parseBody(req, res, claimFileBodySchema);
+      if (!body) return;
+      if (!requireAgentMatch(req, res, body.agentId)) return;
 
-    if (!filePath || !aid || !mode) {
-      res.status(400).json({ error: 'Missing required fields: filePath, agentId, mode' });
-      return;
-    }
+      const result = fileOwnership.claim({
+        filePath: body.filePath,
+        agentId: agentId(body.agentId),
+        mode: body.mode,
+        taskId: body.taskId !== undefined && body.taskId !== null ? taskId(body.taskId) : null,
+        ...(body.ttlMs !== undefined ? { ttlMs: body.ttlMs } : {}),
+        ...(body.branch !== undefined ? { branch: body.branch } : {}),
+      });
 
-    const result = fileOwnership.claim({
-      filePath,
-      agentId: agentId(aid),
-      mode: mode as OwnershipMode,
-      taskId: tid ? taskId(tid) : null,
-      ...(ttlMs !== undefined ? { ttlMs } : {}),
-      ...(branch !== undefined ? { branch } : {}),
-    });
+      if (result.granted) {
+        res.status(201).json(result);
+      } else {
+        res.status(409).json(result);
+      }
+    }),
+  );
 
-    if (result.granted) {
-      res.status(201).json(result);
-    } else {
-      res.status(409).json(result);
-    }
-  });
+  router.delete(
+    '/api/files/{*path}',
+    safe((req, res) => {
+      const aid = queryParam(req, 'agentId');
+      if (!aid) {
+        res.status(400).json({ error: 'Missing query parameter: agentId' });
+        return;
+      }
+      if (!requireAgentMatch(req, res, aid)) return;
 
-  router.delete('/api/files/{*path}', (req: Request, res: Response) => {
-    const aid = queryParam(req, 'agentId');
-    if (!aid) {
-      res.status(400).json({ error: 'Missing query parameter: agentId' });
-      return;
-    }
-
-    const ok = fileOwnership.release(param(req, 'path'), agentId(aid));
-    if (!ok) {
-      res.status(404).json({ error: 'File not claimed by this agent' });
-      return;
-    }
-    res.json({ ok: true });
-  });
+      const ok = fileOwnership.release(param(req, 'path'), agentId(aid));
+      if (!ok) {
+        res.status(404).json({ error: 'File not claimed by this agent' });
+        return;
+      }
+      res.json({ ok: true });
+    }),
+  );
 
   router.get('/api/files', (_req: Request, res: Response) => {
     res.json(fileOwnership.getAllOwnerships());
   });
 
-  router.get('/api/files/check/{*path}', (req: Request, res: Response) => {
-    const ownership = fileOwnership.getOwnership(param(req, 'path'));
-    if (ownership) {
-      res.json(ownership);
-    } else {
-      res.json({ available: true, filePath: param(req, 'path') });
-    }
-  });
+  router.get(
+    '/api/files/check/{*path}',
+    safe((req, res) => {
+      const ownership = fileOwnership.getOwnership(param(req, 'path'));
+      if (ownership) {
+        res.json(ownership);
+      } else {
+        res.json({ available: true, filePath: param(req, 'path') });
+      }
+    }),
+  );
 
   router.get('/api/files/agent/:id', (req: Request, res: Response) => {
     res.json(fileOwnership.getFilesByAgent(agentId(param(req, 'id'))));
@@ -210,26 +269,16 @@ export function createRoutes(services: RouteServices): Router {
   // -------------------------------------------------------------------------
 
   router.post('/api/tasks', (req: Request, res: Response) => {
-    const { title, description, priority, filePaths, dependsOn } = req.body as {
-      title?: string;
-      description?: string;
-      priority?: string;
-      filePaths?: string[];
-      dependsOn?: string[];
-    };
+    const body = parseBody(req, res, createTaskBodySchema);
+    if (!body) return;
 
-    if (!title || description === undefined) {
-      res.status(400).json({ error: 'Missing required fields: title, description' });
-      return;
-    }
-
-    const deps = dependsOn?.map((id) => taskId(id)) as readonly TaskId[] | undefined;
+    const deps = body.dependsOn?.map((id) => taskId(id)) as readonly TaskId[] | undefined;
 
     const task = taskQueue.create({
-      title,
-      description,
-      ...(priority !== undefined ? { priority: priority as TaskPriority } : {}),
-      ...(filePaths !== undefined ? { filePaths } : {}),
+      title: body.title,
+      description: body.description,
+      ...(body.priority !== undefined ? { priority: body.priority } : {}),
+      ...(body.filePaths !== undefined ? { filePaths: body.filePaths } : {}),
       ...(deps !== undefined ? { dependsOn: deps } : {}),
     });
 
@@ -237,13 +286,11 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.post('/api/tasks/:id/assign', (req: Request, res: Response) => {
-    const { agentId: aid } = req.body as { agentId?: string };
-    if (!aid) {
-      res.status(400).json({ error: 'Missing required field: agentId' });
-      return;
-    }
+    const body = parseBody(req, res, assignTaskBodySchema);
+    if (!body) return;
+    if (!requireAgentMatch(req, res, body.agentId)) return;
 
-    const task = taskQueue.assign(taskId(param(req, 'id')), agentId(aid));
+    const task = taskQueue.assign(taskId(param(req, 'id')), agentId(body.agentId));
     if (!task) {
       res.status(409).json({ error: 'Cannot assign task (not pending or dependencies unmet)' });
       return;
@@ -323,31 +370,16 @@ export function createRoutes(services: RouteServices): Router {
   // -------------------------------------------------------------------------
 
   router.post('/api/knowledge', (req: Request, res: Response) => {
-    const {
-      key,
-      value,
-      agentId: aid,
-      sourceHash,
-      ttlSeconds,
-    } = req.body as {
-      key?: string;
-      value?: string;
-      agentId?: string;
-      sourceHash?: string | null;
-      ttlSeconds?: number | null;
-    };
-
-    if (!key || !value || !aid) {
-      res.status(400).json({ error: 'Missing required fields: key, value, agentId' });
-      return;
-    }
+    const body = parseBody(req, res, shareKnowledgeBodySchema);
+    if (!body) return;
+    if (!requireAgentMatch(req, res, body.agentId)) return;
 
     const entry = knowledge.share({
-      key,
-      value,
-      agentId: agentId(aid),
-      ...(sourceHash !== undefined ? { sourceHash } : {}),
-      ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+      key: body.key,
+      value: body.value,
+      agentId: agentId(body.agentId),
+      ...(body.sourceHash !== undefined ? { sourceHash: body.sourceHash } : {}),
+      ...(body.ttlSeconds !== undefined ? { ttlSeconds: body.ttlSeconds } : {}),
     });
 
     res.status(201).json(entry);
@@ -380,30 +412,15 @@ export function createRoutes(services: RouteServices): Router {
   // -------------------------------------------------------------------------
 
   router.post('/api/decisions', (req: Request, res: Response) => {
-    const {
-      agentId: aid,
-      category,
-      summary,
-      rationale,
-    } = req.body as {
-      agentId?: string;
-      category?: string;
-      summary?: string;
-      rationale?: string;
-    };
-
-    if (!aid || !category || !summary || !rationale) {
-      res.status(400).json({
-        error: 'Missing required fields: agentId, category, summary, rationale',
-      });
-      return;
-    }
+    const body = parseBody(req, res, logDecisionBodySchema);
+    if (!body) return;
+    if (!requireAgentMatch(req, res, body.agentId)) return;
 
     const decision = decisions.log({
-      agentId: agentId(aid),
-      category: category as DecisionCategory,
-      summary,
-      rationale,
+      agentId: agentId(body.agentId),
+      category: body.category,
+      summary: body.summary,
+      rationale: body.rationale,
     });
 
     res.status(201).json(decision);
@@ -412,7 +429,8 @@ export function createRoutes(services: RouteServices): Router {
   router.get('/api/decisions', (req: Request, res: Response) => {
     const category = queryParam(req, 'category');
     if (category) {
-      res.json(decisions.getByCategory(category as DecisionCategory));
+      // Validated through the schema's enum — invalid categories yield empty.
+      res.json(decisions.getAll().filter((d) => d.category === category));
     } else {
       res.json(decisions.getAll());
     }
@@ -459,7 +477,13 @@ export function createRoutes(services: RouteServices): Router {
   });
 
   router.get('/api/state', (_req: Request, res: Response) => {
-    res.json({
+    const now = Date.now();
+    if (stateCache && now - stateCache.generatedAt < STATE_CACHE_TTL_MS) {
+      res.type('application/json').send(stateCache.body);
+      return;
+    }
+
+    const body = JSON.stringify({
       agents: registry.getAllAgents(),
       fileOwnerships: fileOwnership.getAllOwnerships(),
       tasks: taskQueue.getAllTasks(),
@@ -467,14 +491,8 @@ export function createRoutes(services: RouteServices): Router {
       decisions: decisions.getAll(),
       conflicts: conflicts.getAll(),
     });
-  });
-
-  // -------------------------------------------------------------------------
-  // Health check (no auth required — registered before auth middleware)
-  // -------------------------------------------------------------------------
-
-  router.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', version: '0.1.0' });
+    stateCache = { generatedAt: now, body };
+    res.type('application/json').send(body);
   });
 
   return router;

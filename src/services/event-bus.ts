@@ -16,6 +16,7 @@
  */
 
 import type { ServerMessage, ServerMessageType } from '../types.js';
+import { logger } from '../util/logger.js';
 
 export type EventListener = (message: ServerMessage) => void;
 
@@ -68,7 +69,10 @@ export class EventBus {
         try {
           listener(message);
         } catch (error: unknown) {
-          console.error(`[EventBus] Listener error on "${message.type}":`, error);
+          logger.error('event-bus', 'Listener error', {
+            type: message.type,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     }
@@ -78,7 +82,10 @@ export class EventBus {
         try {
           listener(message);
         } catch (error: unknown) {
-          console.error(`[EventBus] Wildcard listener error on "${message.type}":`, error);
+          logger.error('event-bus', 'Wildcard listener error', {
+            type: message.type,
+            error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     }

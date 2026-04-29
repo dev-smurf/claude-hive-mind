@@ -10,10 +10,18 @@ import {
 } from '../fixtures/valid-data.js';
 
 let bus: EventBus;
+type StderrSpy = ReturnType<typeof vi.spyOn<NodeJS.WriteStream, 'write'>>;
+let stderrSpy: StderrSpy;
+
+function stderrText(spy: StderrSpy): string {
+  return spy.mock.calls.map((c) => String(c[0])).join('\n');
+}
 
 beforeEach(() => {
   bus = new EventBus();
-  vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  // Logger writes JSON lines to stderr; spy on it so error-isolation
+  // tests can assert that listener errors are captured (not crashed on).
+  stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 });
 
 afterEach(() => {
@@ -220,10 +228,9 @@ describe('error isolation', () => {
 
     expect(bad).toHaveBeenCalledOnce();
     expect(good).toHaveBeenCalledOnce(); // still called despite bad listener
-    expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Listener error on "agent_joined"'),
-      expect.any(Error),
-    );
+    const calls = stderrText(stderrSpy);
+    expect(calls).toMatch(/Listener error/);
+    expect(calls).toMatch(/agent_joined/);
   });
 
   it('catches errors in wildcard listeners without crashing', () => {
@@ -234,10 +241,9 @@ describe('error isolation', () => {
 
     bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
 
-    expect(console.error).toHaveBeenCalledWith(
-      expect.stringContaining('Wildcard listener error on "agent_joined"'),
-      expect.any(Error),
-    );
+    const calls = stderrText(stderrSpy);
+    expect(calls).toMatch(/Wildcard listener error/);
+    expect(calls).toMatch(/agent_joined/);
   });
 
   it('one bad listener does not prevent others from firing', () => {

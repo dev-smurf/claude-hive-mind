@@ -29,6 +29,14 @@ import { conflictId, isoTimestamp } from '../schemas.js';
 import type { Config } from '../config.js';
 import type { Store } from './store.js';
 import type { EventBus } from './event-bus.js';
+import { normalizeFilePath } from '../util/path-normalize.js';
+
+/** Normalize an optional branch string. Empty/whitespace → null. */
+function normalizeBranch(branch: string | null | undefined): string | null {
+  if (branch == null) return null;
+  const trimmed = branch.trim();
+  return trimmed.length === 0 ? null : trimmed;
+}
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -83,21 +91,29 @@ export class FileOwnershipService {
    * prevent TOCTOU races under concurrent requests.
    */
   claim(input: ClaimInput): ClaimResult {
-    return this.store.transaction(() => {
-      const requestBranch = input.branch ?? null;
+    // Normalize and validate inputs at the service boundary. Throws
+    // InvalidPathError on malicious paths — caller (route handler)
+    // should turn this into a 400.
+    const safeFilePath = normalizeFilePath(input.filePath);
+    const safeBranch = normalizeBranch(input.branch ?? null);
 
+    return this.store.transaction(() => {
       // Check all existing claims for this file path (across all branches)
-      const existingClaims = this.store.getFileOwnershipsByPath(input.filePath);
+      const existingClaims = this.store.getFileOwnershipsByPath(safeFilePath);
 
       for (const existing of existingClaims) {
         // Skip claims by the same agent on the same branch (re-claim)
-        if (existing.agentId === input.agentId && existing.branch === requestBranch) {
+        if (existing.agentId === input.agentId && existing.branch === safeBranch) {
           continue;
         }
 
         // Skip claims by different agents — only if from a different agent
         if (existing.agentId !== input.agentId) {
-          const conflict = this.detectConflict(existing, input);
+          const conflict = this.detectConflict(existing, {
+            ...input,
+            filePath: safeFilePath,
+            branch: safeBranch,
+          });
           if (conflict) {
             this.store.insertConflict(conflict);
             this.bus.emit({ type: 'conflict_detected', conflict });
@@ -123,13 +139,13 @@ export class FileOwnershipService {
         ttlMs != null && ttlMs > 0 ? isoTimestamp(new Date(Date.now() + ttlMs)) : null;
 
       const ownership: FileOwnership = {
-        filePath: input.filePath,
+        filePath: safeFilePath,
         agentId: input.agentId,
         mode: input.mode,
         taskId: input.taskId ?? null,
         claimedAt: now,
         expiresAt,
-        branch: requestBranch,
+        branch: safeBranch,
       };
 
       this.store.upsertFileOwnership(ownership);
@@ -144,12 +160,13 @@ export class FileOwnershipService {
    * Returns true if the file was previously claimed, false otherwise.
    */
   release(filePath: string, agentId: AgentId, branch?: string | null): boolean {
-    const branchVal = branch ?? null;
-    const existing = this.store.getFileOwnership(filePath, branchVal);
+    const safeFilePath = normalizeFilePath(filePath);
+    const branchVal = normalizeBranch(branch);
+    const existing = this.store.getFileOwnership(safeFilePath, branchVal);
     if (existing?.agentId !== agentId) return false;
 
-    this.store.deleteFileOwnership(filePath, branchVal);
-    this.bus.emit({ type: 'file_released', filePath, agentId });
+    this.store.deleteFileOwnership(safeFilePath, branchVal);
+    this.bus.emit({ type: 'file_released', filePath: safeFilePath, agentId });
 
     return true;
   }
@@ -180,8 +197,9 @@ export class FileOwnershipService {
     mode: OwnershipMode,
     branch?: string | null,
   ): boolean {
-    const requestBranch = branch ?? null;
-    const existingClaims = this.store.getFileOwnershipsByPath(filePath);
+    const safeFilePath = normalizeFilePath(filePath);
+    const requestBranch = normalizeBranch(branch);
+    const existingClaims = this.store.getFileOwnershipsByPath(safeFilePath);
 
     for (const existing of existingClaims) {
       if (existing.agentId === agentId) continue;
@@ -203,12 +221,12 @@ export class FileOwnershipService {
 
   /** Get the current ownership of a file on a specific branch. */
   getOwnership(filePath: string, branch?: string | null): FileOwnership | undefined {
-    return this.store.getFileOwnership(filePath, branch);
+    return this.store.getFileOwnership(normalizeFilePath(filePath), normalizeBranch(branch));
   }
 
   /** Get all claims for a file across all branches. */
   getOwnershipsByPath(filePath: string): readonly FileOwnership[] {
-    return this.store.getFileOwnershipsByPath(filePath);
+    return this.store.getFileOwnershipsByPath(normalizeFilePath(filePath));
   }
 
   /** Get all files claimed by a specific agent. */
@@ -260,7 +278,7 @@ export class FileOwnershipService {
 
     // Different branches (both known) → no real conflict (isolated work)
     const existingBranch = existing.branch;
-    const requestBranch = request.branch ?? null;
+    const requestBranch = normalizeBranch(request.branch ?? null);
     if (existingBranch && requestBranch && existingBranch !== requestBranch) {
       return null;
     }

@@ -27,14 +27,24 @@ function clearAllChmEnv(): void {
 // Setup / teardown
 // ---------------------------------------------------------------------------
 
+type StderrSpy = ReturnType<typeof vi.spyOn<NodeJS.WriteStream, 'write'>>;
+
+function stderrText(spy: StderrSpy): string {
+  return spy.mock.calls.map((c) => String(c[0])).join('\n');
+}
+
 describe('config', () => {
   let originalEnv: NodeJS.ProcessEnv;
+  let stderrSpy: StderrSpy;
 
   beforeEach(() => {
     originalEnv = { ...process.env };
     clearAllChmEnv();
-    // Suppress console.log from generated token
+    // Suppress console.log just in case any path still uses it.
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    // Logger writes JSON lines to stderr; spy so token-logging tests can
+    // assert the masked token preview is emitted (and never the raw token).
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   });
 
   afterEach(() => {
@@ -57,9 +67,23 @@ describe('config', () => {
       expect(config.host).toBe('0.0.0.0');
     });
 
-    it('uses hivemind.db by default', () => {
+    it('uses hivemind.db by default (resolved to absolute path)', () => {
       const config = loadConfig();
-      expect(config.dbPath).toBe('hivemind.db');
+      expect(config.dbPath).toMatch(/hivemind\.db$/);
+      // Should be absolute so process CWD changes can't relocate the DB.
+      expect(config.dbPath.startsWith('/') || /^[a-zA-Z]:\\/.test(config.dbPath)).toBe(true);
+    });
+
+    it('preserves :memory: as a non-resolved special value', () => {
+      const orig = process.env.CHM_DB_PATH;
+      process.env.CHM_DB_PATH = ':memory:';
+      try {
+        const config = loadConfig();
+        expect(config.dbPath).toBe(':memory:');
+      } finally {
+        if (orig === undefined) delete process.env.CHM_DB_PATH;
+        else process.env.CHM_DB_PATH = orig;
+      }
     });
 
     it('enables auth by default', () => {
@@ -325,20 +349,29 @@ describe('config', () => {
 
     it('does not log token in production', () => {
       setEnv({ NODE_ENV: 'production' });
+      stderrSpy.mockClear();
       loadConfig();
-      expect(console.log).not.toHaveBeenCalled();
+      const stderrCalls = stderrText(stderrSpy);
+      expect(stderrCalls).not.toMatch(/CHM_AUTH_TOKEN/);
     });
 
-    it('logs generated token in development', () => {
+    it('logs masked token preview in development (not the raw token)', () => {
       setEnv({ NODE_ENV: 'development' });
-      loadConfig();
-      expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Generated:'));
+      stderrSpy.mockClear();
+      const config = loadConfig();
+      const stderrCalls = stderrText(stderrSpy);
+      // Reference to the env var name in the warning is fine.
+      expect(stderrCalls).toMatch(/CHM_AUTH_TOKEN/);
+      // Critical: the raw token must never appear in stderr.
+      expect(stderrCalls).not.toContain(config.authToken);
     });
 
     it('does not log when token is explicitly provided', () => {
       setEnv({ CHM_AUTH_TOKEN: 'explicit-token' });
+      stderrSpy.mockClear();
       loadConfig();
-      expect(console.log).not.toHaveBeenCalled();
+      const stderrCalls = stderrText(stderrSpy);
+      expect(stderrCalls).not.toMatch(/CHM_AUTH_TOKEN/);
     });
   });
 });
@@ -358,6 +391,7 @@ describe('validateConfig', () => {
       corsOrigins: ['http://localhost:7777'],
       rateLimitWindowMs: 60_000,
       rateLimitMaxRequests: 200,
+      trustProxy: 0,
       heartbeatIntervalMs: 10_000,
       heartbeatTimeoutMs: 30_000,
       staleAgentCleanupMs: 60_000,
@@ -470,7 +504,13 @@ describe('validateConfig', () => {
           defaultClaimTtlMs: 1000,
         }),
       );
-      expect(warnings).toHaveLength(4);
+      // auth disabled, wildcard CORS, high rate limit, short TTL, host=0.0.0.0
+      expect(warnings).toHaveLength(5);
+    });
+
+    it('warns on 0.0.0.0 binding in production', () => {
+      const warnings = validateConfig(makeConfig({ host: '0.0.0.0', nodeEnv: 'production' }));
+      expect(warnings.some((w) => w.includes('0.0.0.0'))).toBe(true);
     });
   });
 

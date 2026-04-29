@@ -35,7 +35,21 @@ import type {
   ConflictSeverity,
   ISOTimestamp,
 } from '../types.js';
-import { agentId, taskId, conflictId, decisionId } from '../schemas.js';
+import {
+  agentId,
+  taskId,
+  conflictId,
+  decisionId,
+  agentStatusSchema,
+  agentToolSchema,
+  ownershipModeSchema,
+  taskStatusSchema,
+  taskPrioritySchema,
+  decisionCategorySchema,
+  conflictTypeSchema,
+  conflictSeveritySchema,
+} from '../schemas.js';
+import { logger } from '../util/logger.js';
 
 // ---------------------------------------------------------------------------
 // Row types — what SQLite actually returns (flat, no branded types)
@@ -52,6 +66,7 @@ interface AgentRow {
   workspace_path: string;
   current_branch: string | null;
   repo_url: string | null;
+  agent_token: string;
 }
 
 interface FileOwnershipRow {
@@ -111,12 +126,26 @@ interface ConflictRow {
 // Row → Domain converters
 // ---------------------------------------------------------------------------
 
+/**
+ * Validate a string against a Zod enum schema. On failure, log the
+ * drift and throw — the row converter sits at the storage→domain
+ * boundary, so corruption here must surface immediately.
+ */
+function parseEnum<T>(schema: { parse: (val: unknown) => T }, value: string, field: string): T {
+  try {
+    return schema.parse(value);
+  } catch {
+    logger.error('store', `Invalid ${field} value in DB row`, { value, field });
+    throw new Error(`Invalid ${field} value in DB: "${value}"`);
+  }
+}
+
 function rowToAgent(row: AgentRow): AgentRecord {
   return {
     id: agentId(row.id),
     displayName: row.display_name,
-    tool: row.tool as AgentTool,
-    status: row.status as AgentStatus,
+    tool: parseEnum<AgentTool>(agentToolSchema, row.tool, 'agent.tool'),
+    status: parseEnum<AgentStatus>(agentStatusSchema, row.status, 'agent.status'),
     currentTaskId: row.current_task_id ? taskId(row.current_task_id) : null,
     lastHeartbeat: row.last_heartbeat as ISOTimestamp,
     connectedAt: row.connected_at as ISOTimestamp,
@@ -130,7 +159,7 @@ function rowToFileOwnership(row: FileOwnershipRow): FileOwnership {
   return {
     filePath: row.file_path,
     agentId: agentId(row.agent_id),
-    mode: row.mode as OwnershipMode,
+    mode: parseEnum<OwnershipMode>(ownershipModeSchema, row.mode, 'ownership.mode'),
     taskId: row.task_id ? taskId(row.task_id) : null,
     claimedAt: row.claimed_at as ISOTimestamp,
     expiresAt: row.expires_at as ISOTimestamp | null,
@@ -144,8 +173,8 @@ function rowToTask(row: TaskRow): Task {
     title: row.title,
     description: row.description,
     assignedAgentId: row.assigned_agent_id ? agentId(row.assigned_agent_id) : null,
-    status: row.status as TaskStatus,
-    priority: row.priority as TaskPriority,
+    status: parseEnum<TaskStatus>(taskStatusSchema, row.status, 'task.status'),
+    priority: parseEnum<TaskPriority>(taskPrioritySchema, row.priority, 'task.priority'),
     filePaths: JSON.parse(row.file_paths) as string[],
     dependsOn: (JSON.parse(row.depends_on) as string[]).map(taskId),
     createdAt: row.created_at as ISOTimestamp,
@@ -168,7 +197,11 @@ function rowToDecision(row: DecisionRow): Decision {
   return {
     id: decisionId(row.id),
     agentId: agentId(row.agent_id),
-    category: row.category as DecisionCategory,
+    category: parseEnum<DecisionCategory>(
+      decisionCategorySchema,
+      row.category,
+      'decision.category',
+    ),
     summary: row.summary,
     rationale: row.rationale,
     timestamp: row.timestamp as ISOTimestamp,
@@ -178,8 +211,12 @@ function rowToDecision(row: DecisionRow): Decision {
 function rowToConflict(row: ConflictRow): Conflict {
   return {
     id: conflictId(row.id),
-    type: row.type as ConflictType,
-    severity: row.severity as ConflictSeverity,
+    type: parseEnum<ConflictType>(conflictTypeSchema, row.type, 'conflict.type'),
+    severity: parseEnum<ConflictSeverity>(
+      conflictSeveritySchema,
+      row.severity,
+      'conflict.severity',
+    ),
     agentA: agentId(row.agent_a),
     agentB: agentId(row.agent_b),
     filePaths: JSON.parse(row.file_paths) as string[],
@@ -204,7 +241,8 @@ const SCHEMA = `
     connected_at    TEXT NOT NULL,
     workspace_path  TEXT NOT NULL,
     current_branch  TEXT,
-    repo_url        TEXT
+    repo_url        TEXT,
+    agent_token     TEXT NOT NULL DEFAULT ''
   );
 
   CREATE TABLE IF NOT EXISTS file_ownership (
@@ -267,6 +305,8 @@ const SCHEMA = `
     FOREIGN KEY (agent_b) REFERENCES agents(id) ON DELETE CASCADE
   );
 
+  CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
+  CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(agent_token);
   CREATE INDEX IF NOT EXISTS idx_file_ownership_agent ON file_ownership(agent_id);
   CREATE INDEX IF NOT EXISTS idx_file_ownership_branch ON file_ownership(branch);
   CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
@@ -275,6 +315,25 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_decisions_category ON decisions(category);
   CREATE INDEX IF NOT EXISTS idx_conflicts_resolved ON conflicts(resolved);
 `;
+
+/**
+ * Lightweight in-place migrations. Idempotent. Adds new columns to
+ * existing databases that pre-date their introduction.
+ */
+function runMigrations(db: BetterSqlite3.Database): void {
+  const cols = db.prepare('PRAGMA table_info(agents)').all() as { name: string }[];
+  const colNames = new Set(cols.map((c) => c.name));
+
+  if (!colNames.has('current_branch')) {
+    db.exec('ALTER TABLE agents ADD COLUMN current_branch TEXT');
+  }
+  if (!colNames.has('repo_url')) {
+    db.exec('ALTER TABLE agents ADD COLUMN repo_url TEXT');
+  }
+  if (!colNames.has('agent_token')) {
+    db.exec("ALTER TABLE agents ADD COLUMN agent_token TEXT NOT NULL DEFAULT ''");
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Store class
@@ -289,6 +348,7 @@ export class Store {
     this.db.pragma('foreign_keys = ON');
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(SCHEMA);
+    runMigrations(this.db);
   }
 
   /** Close the database connection. */
@@ -300,7 +360,43 @@ export class Store {
   // Agents
   // -------------------------------------------------------------------------
 
-  upsertAgent(agent: AgentRecord): void {
+  /**
+   * Upsert an agent. Optionally writes/rotates the agent token. If
+   * `agentToken` is omitted on update, the existing token is preserved.
+   */
+  upsertAgent(agent: AgentRecord, agentToken?: string): void {
+    if (agentToken !== undefined) {
+      this.db
+        .prepare(
+          `INSERT INTO agents (id, display_name, tool, status, current_task_id, last_heartbeat, connected_at, workspace_path, current_branch, repo_url, agent_token)
+           VALUES (@id, @displayName, @tool, @status, @currentTaskId, @lastHeartbeat, @connectedAt, @workspacePath, @currentBranch, @repoUrl, @agentToken)
+           ON CONFLICT(id) DO UPDATE SET
+             display_name = @displayName,
+             tool = @tool,
+             status = @status,
+             current_task_id = @currentTaskId,
+             last_heartbeat = @lastHeartbeat,
+             workspace_path = @workspacePath,
+             current_branch = @currentBranch,
+             repo_url = @repoUrl,
+             agent_token = @agentToken`,
+        )
+        .run({
+          id: agent.id,
+          displayName: agent.displayName,
+          tool: agent.tool,
+          status: agent.status,
+          currentTaskId: agent.currentTaskId,
+          lastHeartbeat: agent.lastHeartbeat,
+          connectedAt: agent.connectedAt,
+          workspacePath: agent.workspacePath,
+          currentBranch: agent.currentBranch,
+          repoUrl: agent.repoUrl,
+          agentToken,
+        });
+      return;
+    }
+
     this.db
       .prepare(
         `INSERT INTO agents (id, display_name, tool, status, current_task_id, last_heartbeat, connected_at, workspace_path, current_branch, repo_url)
@@ -327,6 +423,28 @@ export class Store {
         currentBranch: agent.currentBranch,
         repoUrl: agent.repoUrl,
       });
+  }
+
+  /**
+   * Look up an agent by their auth token. Used by the auth middleware
+   * to map an incoming Bearer token to an agent identity.
+   */
+  getAgentByToken(token: string): AgentRecord | undefined {
+    if (!token) return undefined;
+    const row = this.db
+      .prepare('SELECT * FROM agents WHERE agent_token = ? AND agent_token != ?')
+      .get(token, '') as AgentRow | undefined;
+    return row ? rowToAgent(row) : undefined;
+  }
+
+  /** Get agents whose status is in the given set. Indexed query. */
+  getAgentsByStatus(...statuses: readonly AgentStatus[]): readonly AgentRecord[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT * FROM agents WHERE status IN (${placeholders}) ORDER BY connected_at`)
+      .all(...statuses) as AgentRow[];
+    return rows.map(rowToAgent);
   }
 
   getAgent(id: AgentId): AgentRecord | undefined {
@@ -488,6 +606,17 @@ export class Store {
     const rows = this.db
       .prepare('SELECT * FROM tasks WHERE status = ? ORDER BY created_at')
       .all(status) as TaskRow[];
+    return rows.map(rowToTask);
+  }
+
+  /**
+   * Get tasks assigned to a specific agent in a specific status. Indexed
+   * query — used at agent disconnect time to find orphaned tasks.
+   */
+  getTasksAssignedTo(agentIdVal: AgentId, status: TaskStatus): readonly Task[] {
+    const rows = this.db
+      .prepare('SELECT * FROM tasks WHERE assigned_agent_id = ? AND status = ? ORDER BY created_at')
+      .all(agentIdVal, status) as TaskRow[];
     return rows.map(rowToTask);
   }
 

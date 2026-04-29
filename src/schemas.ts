@@ -14,11 +14,37 @@
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
+// Length limits
+// ---------------------------------------------------------------------------
+
+/** Length caps applied at HTTP/MCP boundaries to prevent unbounded inputs. */
+export const LENGTH_LIMITS = {
+  /** Display names, tool names, branch names. */
+  shortName: 200,
+  /** File paths, workspace paths, repo URLs, knowledge keys. */
+  path: 1024,
+  /** Decision summaries. */
+  summary: 500,
+  /** Decision rationales, knowledge values, task descriptions. */
+  longText: 100_000,
+  /** Task titles. */
+  title: 500,
+  /** Conflict descriptions. */
+  description: 2_000,
+} as const;
+
+// ---------------------------------------------------------------------------
 // Primitives
 // ---------------------------------------------------------------------------
 
-/** Validates a non-empty trimmed string. */
-const nonEmptyString = z.string().trim().min(1);
+/** Validates a non-empty trimmed string with a default cap. */
+const nonEmptyString = z.string().trim().min(1).max(LENGTH_LIMITS.longText);
+
+/** Short, single-line strings (names, branches, etc.). */
+const shortString = z.string().trim().min(1).max(LENGTH_LIMITS.shortName);
+
+/** Path-like strings. */
+const pathString = z.string().trim().min(1).max(LENGTH_LIMITS.path);
 
 /** Validates an ISO 8601 timestamp string. */
 export const isoTimestampSchema = z.iso.datetime();
@@ -226,6 +252,58 @@ export const clientMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('subscribe_status') }),
   z.object({ type: z.literal('unsubscribe_status') }),
 ]);
+
+// ---------------------------------------------------------------------------
+// HTTP route body schemas — validated at handler entry
+// ---------------------------------------------------------------------------
+
+export const registerAgentBodySchema = z.object({
+  displayName: shortString,
+  tool: agentToolSchema,
+  workspacePath: pathString,
+  currentBranch: shortString.nullable().optional(),
+  repoUrl: pathString.nullable().optional(),
+});
+
+export const updateBranchBodySchema = z.object({
+  branch: shortString.nullable(),
+});
+
+export const claimFileBodySchema = z.object({
+  filePath: pathString,
+  agentId: shortString,
+  mode: ownershipModeSchema,
+  taskId: shortString.nullable().optional(),
+  ttlMs: z.number().int().positive().nullable().optional(),
+  branch: shortString.nullable().optional(),
+});
+
+export const createTaskBodySchema = z.object({
+  title: z.string().trim().min(1).max(LENGTH_LIMITS.title),
+  description: z.string().max(LENGTH_LIMITS.longText),
+  priority: taskPrioritySchema.optional(),
+  filePaths: z.array(pathString).max(1000).optional(),
+  dependsOn: z.array(shortString).max(1000).optional(),
+});
+
+export const assignTaskBodySchema = z.object({
+  agentId: shortString,
+});
+
+export const shareKnowledgeBodySchema = z.object({
+  key: pathString,
+  value: z.string().min(1).max(LENGTH_LIMITS.longText),
+  agentId: shortString,
+  sourceHash: shortString.nullable().optional(),
+  ttlSeconds: z.number().int().positive().nullable().optional(),
+});
+
+export const logDecisionBodySchema = z.object({
+  agentId: shortString,
+  category: decisionCategorySchema,
+  summary: z.string().trim().min(1).max(LENGTH_LIMITS.summary),
+  rationale: z.string().trim().min(1).max(LENGTH_LIMITS.longText),
+});
 
 // ---------------------------------------------------------------------------
 // ID factory helpers — create branded IDs from plain strings

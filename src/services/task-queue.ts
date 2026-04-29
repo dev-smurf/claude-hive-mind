@@ -223,17 +223,30 @@ export class TaskQueue {
    * Unassign all in_progress tasks held by a specific agent.
    * Used when an agent disconnects to prevent orphaned tasks.
    * Returns the number of tasks unassigned.
+   *
+   * Wrapped in a single transaction — one indexed lookup, one
+   * batched write per task, single broadcast per task.
    */
   unassignByAgent(agentId: AgentId): number {
-    const allTasks = this.store.getAllTasks();
-    let count = 0;
-    for (const task of allTasks) {
-      if (task.status === 'in_progress' && task.assignedAgentId === agentId) {
-        this.unassign(task.id);
-        count++;
+    return this.store.transaction(() => {
+      const tasks = this.store.getTasksAssignedTo(agentId, 'in_progress');
+      if (tasks.length === 0) return 0;
+
+      const now = isoTimestamp();
+      for (const task of tasks) {
+        this.store.unassignTask(task.id, now);
       }
-    }
-    return count;
+
+      // Re-fetch and broadcast outside the write batch but inside the txn.
+      for (const task of tasks) {
+        const updated = this.store.getTask(task.id);
+        if (updated) {
+          this.bus.emit({ type: 'task_updated', task: updated });
+        }
+      }
+
+      return tasks.length;
+    });
   }
 
   /** Delete a task permanently. */

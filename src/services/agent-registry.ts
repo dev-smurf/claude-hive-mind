@@ -17,7 +17,7 @@
  * - All mutations emit events through the EventBus
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { AgentId, AgentRecord, AgentTool, TaskId } from '../types.js';
 import { agentId, isoTimestamp } from '../schemas.js';
 import type { Config } from '../config.js';
@@ -31,6 +31,13 @@ export interface RegisterInput {
   readonly workspacePath: string;
   readonly currentBranch?: string | null;
   readonly repoUrl?: string | null;
+}
+
+/** AgentRecord plus the agent-scoped token issued at registration. */
+export type AgentRecordWithToken = AgentRecord & { readonly agentToken: string };
+
+function generateAgentToken(): string {
+  return randomBytes(32).toString('hex');
 }
 
 export class AgentRegistry {
@@ -56,9 +63,13 @@ export class AgentRegistry {
 
   /**
    * Register a new agent and broadcast the event.
-   * Returns the created AgentRecord with a fresh UUID.
+   *
+   * Returns the AgentRecord with an additional `agentToken` field that is
+   * only present in this registration response (never on subsequent reads
+   * of the agent record). Callers should immediately capture and forward
+   * the token to the agent process.
    */
-  register(input: RegisterInput): AgentRecord {
+  register(input: RegisterInput): AgentRecordWithToken {
     const now = isoTimestamp();
     const agent: AgentRecord = {
       id: agentId(randomUUID()),
@@ -72,11 +83,12 @@ export class AgentRegistry {
       currentBranch: input.currentBranch ?? null,
       repoUrl: input.repoUrl ?? null,
     };
+    const agentToken = generateAgentToken();
 
-    this.store.upsertAgent(agent);
+    this.store.upsertAgent(agent, agentToken);
     this.bus.emit({ type: 'agent_joined', agent });
 
-    return agent;
+    return { ...agent, agentToken };
   }
 
   /**
@@ -188,7 +200,12 @@ export class AgentRegistry {
 
   /** Get only agents with active/busy/idle status. */
   getConnectedAgents(): readonly AgentRecord[] {
-    return this.store.getAllAgents().filter((a) => a.status !== 'disconnected');
+    return this.store.getAgentsByStatus('active', 'busy', 'idle');
+  }
+
+  /** Look up an agent by their token. Used by the auth middleware. */
+  getAgentByToken(token: string): AgentRecord | undefined {
+    return this.store.getAgentByToken(token);
   }
 
   /**

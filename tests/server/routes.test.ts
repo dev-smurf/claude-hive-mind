@@ -25,6 +25,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     corsOrigins: ['*'],
     rateLimitWindowMs: 60_000,
     rateLimitMaxRequests: 1000,
+    trustProxy: 0,
     heartbeatIntervalMs: 10_000,
     heartbeatTimeoutMs: 30_000,
     staleAgentCleanupMs: 60_000,
@@ -952,6 +953,165 @@ describe('HTTP API', () => {
         'secret-123',
       );
       expect(regRes.status).toBe(201);
+    });
+
+    it('returns a per-agent token at registration', async () => {
+      const regRes = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Tokened', tool: 'claude-code', workspacePath: '/test' },
+        'secret-123',
+      );
+      const body = (await regRes.json()) as { id: string; agentToken: string };
+      expect(body.agentToken).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    it('per-agent token authorizes its own heartbeat', async () => {
+      const regRes = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Self', tool: 'claude-code', workspacePath: '/test' },
+        'secret-123',
+      );
+      const body = (await regRes.json()) as { id: string; agentToken: string };
+      const hbRes = await post(
+        `${authedBase}/api/agents/${body.id}/heartbeat`,
+        {},
+        body.agentToken,
+      );
+      expect(hbRes.status).toBe(200);
+    });
+
+    it('per-agent token cannot heartbeat a different agent', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A', tool: 'claude-code', workspacePath: '/a' },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+      const regB = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B', tool: 'claude-code', workspacePath: '/b' },
+        'secret-123',
+      );
+      const b = (await regB.json()) as { id: string };
+
+      // Agent A's token must not be able to mutate Agent B.
+      const res = await post(`${authedBase}/api/agents/${b.id}/heartbeat`, {}, a.agentToken);
+      expect(res.status).toBe(403);
+    });
+
+    it('per-agent token cannot claim files for a different agent', async () => {
+      const regA = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A2', tool: 'claude-code', workspacePath: '/a' },
+        'secret-123',
+      );
+      const a = (await regA.json()) as { id: string; agentToken: string };
+      const regB = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B2', tool: 'claude-code', workspacePath: '/b' },
+        'secret-123',
+      );
+      const b = (await regB.json()) as { id: string };
+
+      const res = await post(
+        `${authedBase}/api/files/claim`,
+        { filePath: 'x.ts', agentId: b.id, mode: 'exclusive' },
+        a.agentToken,
+      );
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Path traversal protection
+  // -----------------------------------------------------------------------
+
+  describe('Path traversal protection', () => {
+    let agent: AgentResponse;
+
+    beforeEach(async () => {
+      agent = await registerAgent(base, 'PathTester');
+    });
+
+    it('rejects parent directory traversal', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: '../../etc/passwd',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects absolute paths', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: '/etc/passwd',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects home directory expansion', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: '~/.ssh/id_rsa',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects null bytes in path', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: 'safe.ts\0evil',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('accepts a normal repo-relative path', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: 'src/util/helper.ts',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(201);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Body validation (Zod-enforced)
+  // -----------------------------------------------------------------------
+
+  describe('Body validation', () => {
+    it('rejects unknown agent tool with 400 (not 500)', async () => {
+      const res = await post(`${base}/api/agents/register`, {
+        displayName: 'X',
+        tool: 'not-a-tool',
+        workspacePath: '/x',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects unknown ownership mode with 400', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: 'x.ts',
+        agentId: a.id,
+        mode: 'somethinginvalid',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects unknown decision category with 400', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/decisions`, {
+        agentId: a.id,
+        category: 'not-real',
+        summary: 's',
+        rationale: 'r',
+      });
+      expect(res.status).toBe(400);
     });
   });
 

@@ -5,20 +5,56 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { Request, Response, NextFunction, RequestHandler } from 'express';
 import type { Config } from '../config.js';
+import type { AgentRegistry } from '../services/agent-registry.js';
+import { logger } from '../util/logger.js';
 
 /** Timing-safe string comparison to prevent side-channel leaks. */
-function safeCompare(a: string, b: string): boolean {
+export function safeCompare(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 // ---------------------------------------------------------------------------
-// Auth middleware — Bearer token validation
+// Auth context — attached to req when authenticated
 // ---------------------------------------------------------------------------
 
-export function authMiddleware(config: Config): RequestHandler {
+/** Authentication mode for the current request. */
+export type AuthMode = 'admin' | 'agent';
+
+/** Properties added to req by authMiddleware. */
+export interface AuthContext {
+  authMode: AuthMode;
+  /** When authMode === 'agent', the ID of the authenticated agent. */
+  authenticatedAgentId?: string;
+}
+
+declare module 'express-serve-static-core' {
+  // Augment Express's Request type with our auth fields.
+  interface Request {
+    auth?: AuthContext;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auth middleware — Bearer token validation (admin OR per-agent)
+// ---------------------------------------------------------------------------
+
+/**
+ * Authenticate the request via Bearer token.
+ *
+ * Two-tier model:
+ *  - Admin token (CHM_AUTH_TOKEN): full access, all routes.
+ *  - Per-agent token: scoped — agent-specific routes must match the
+ *    authenticated agent. Used for routes like heartbeat, branch updates,
+ *    or anything that mutates the agent's own state.
+ *
+ * Returns 401 if no/malformed header, 403 if token is invalid.
+ */
+export function authMiddleware(config: Config, registry: AgentRegistry): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!config.authEnabled) {
+      // Auth disabled → grant admin so per-route checks pass through.
+      req.auth = { authMode: 'admin' };
       next();
       return;
     }
@@ -30,13 +66,45 @@ export function authMiddleware(config: Config): RequestHandler {
     }
 
     const token = authHeader.slice(7);
-    if (!safeCompare(token, config.authToken)) {
-      res.status(403).json({ error: 'Invalid auth token' });
+
+    // First check: admin token grants full access.
+    if (token.length === config.authToken.length && safeCompare(token, config.authToken)) {
+      req.auth = { authMode: 'admin' };
+      next();
       return;
     }
 
-    next();
+    // Second check: per-agent token.
+    const agent = registry.getAgentByToken(token);
+    if (agent) {
+      req.auth = { authMode: 'agent', authenticatedAgentId: agent.id };
+      next();
+      return;
+    }
+
+    res.status(403).json({ error: 'Invalid auth token' });
   };
+}
+
+/**
+ * Helper for route handlers: ensure the authenticated caller is allowed to
+ * act on `agentIdParam`. Admin can act on anyone; agent tokens can only
+ * act on themselves.
+ *
+ * Returns true if authorized; otherwise sends 403 and returns false.
+ */
+export function requireAgentMatch(req: Request, res: Response, agentIdParam: string): boolean {
+  const auth = req.auth;
+  if (!auth) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return false;
+  }
+  if (auth.authMode === 'admin') return true;
+  if (auth.authenticatedAgentId === agentIdParam) {
+    return true;
+  }
+  res.status(403).json({ error: 'Token does not authorize this operation' });
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +131,9 @@ export function rateLimitMiddleware(config: Config): RequestHandler {
   cleanup.unref();
 
   return (req: Request, res: Response, next: NextFunction): void => {
+    // req.ip honours `app.set('trust proxy', ...)` configured in server.ts.
+    // Without trust proxy, this is the socket address (loopback when behind a
+    // reverse proxy) — see config.trustProxy.
     const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
     const now = Date.now();
 
@@ -100,6 +171,8 @@ export function errorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
-  console.error('[Server] Unhandled error:', err);
+  logger.error('http', 'Unhandled error in route', {
+    error: err instanceof Error ? err.message : String(err),
+  });
   res.status(500).json({ error: 'Internal server error' });
 }

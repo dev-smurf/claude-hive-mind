@@ -12,6 +12,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { resolve as resolvePath } from 'node:path';
+import { logger } from './util/logger.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -74,6 +76,8 @@ export interface Config {
   readonly corsOrigins: readonly string[];
   readonly rateLimitWindowMs: number;
   readonly rateLimitMaxRequests: number;
+  /** Number of trusted proxy hops for `req.ip` resolution (0 = none). */
+  readonly trustProxy: number;
 
   /** Agent lifecycle */
   readonly heartbeatIntervalMs: number;
@@ -100,14 +104,30 @@ export interface Config {
   readonly logLevel: string;
 }
 
+/** Resolve `dbPath` to an absolute path so CWD changes can't relocate the DB. */
+function resolveDbPath(raw: string): string {
+  if (raw === ':memory:') return raw;
+  return resolvePath(raw);
+}
+
+/** Mask a secret for safe logging — keep first 4 and last 4 chars. */
+function maskToken(token: string): string {
+  if (token.length <= 8) return '***';
+  return `${token.slice(0, 4)}…${token.slice(-4)}`;
+}
+
 export function loadConfig(): Config {
   const authToken = env('CHM_AUTH_TOKEN', '');
   const generatedToken = authToken || generateToken();
+  const nodeEnv = env('NODE_ENV', 'development');
 
-  // Log the generated token on first run so the user can grab it
-  if (!authToken && env('NODE_ENV', 'development') === 'development') {
-    console.log(`[CHM] No CHM_AUTH_TOKEN set. Generated: ${generatedToken}`);
-    console.log('[CHM] Set CHM_AUTH_TOKEN in .env to persist across restarts.');
+  // Log a masked token + setup hint on first run. Goes to stderr (logger),
+  // never stdout — stdout is reserved for the MCP stdio transport.
+  if (!authToken && nodeEnv === 'development') {
+    logger.warn('config', 'No CHM_AUTH_TOKEN set; generated ephemeral token', {
+      tokenPreview: maskToken(generatedToken),
+      hint: 'Set CHM_AUTH_TOKEN in .env to persist across restarts.',
+    });
   }
 
   return {
@@ -116,7 +136,7 @@ export function loadConfig(): Config {
     host: env('CHM_HOST', '0.0.0.0'),
 
     // Database
-    dbPath: env('CHM_DB_PATH', 'hivemind.db'),
+    dbPath: resolveDbPath(env('CHM_DB_PATH', 'hivemind.db')),
 
     // Security
     authToken: generatedToken,
@@ -124,6 +144,7 @@ export function loadConfig(): Config {
     corsOrigins: envList('CHM_CORS_ORIGINS', ['http://localhost:7777']),
     rateLimitWindowMs: envInt('CHM_RATE_LIMIT_WINDOW_MS', 60_000),
     rateLimitMaxRequests: envInt('CHM_RATE_LIMIT_MAX', 200),
+    trustProxy: envInt('CHM_TRUST_PROXY', 0),
 
     // Agent lifecycle
     heartbeatIntervalMs: envInt('CHM_HEARTBEAT_INTERVAL_MS', 10_000),
@@ -146,7 +167,7 @@ export function loadConfig(): Config {
     dashboardEnabled: envBool('CHM_DASHBOARD_ENABLED', true),
 
     // Environment
-    nodeEnv: env('NODE_ENV', 'development'),
+    nodeEnv,
     logLevel: env('CHM_LOG_LEVEL', 'info'),
   };
 }
@@ -188,6 +209,11 @@ export function validateConfig(config: Config): readonly string[] {
   // Warning: claim TTL too short
   if (config.defaultClaimTtlMs < 30_000) {
     warnings.push('WARNING: File claim TTL < 30s. Agents may lose claims mid-edit.');
+  }
+
+  // Warning: 0.0.0.0 in production
+  if (config.host === '0.0.0.0' && config.nodeEnv === 'production') {
+    warnings.push('WARNING: Binding to 0.0.0.0 in production. Restrict CHM_HOST.');
   }
 
   return warnings;

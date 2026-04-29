@@ -21,6 +21,7 @@ import { ConflictDetector } from '../services/conflict-detector.js';
 import { createRoutes } from './routes.js';
 import { authMiddleware, rateLimitMiddleware, errorHandler } from './middleware.js';
 import { WsHandler } from './ws-handler.js';
+import { logger, setLogLevel } from '../util/logger.js';
 
 export interface HiveMindServer {
   readonly httpServer: Server;
@@ -53,7 +54,13 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   // Express app
   // -------------------------------------------------------------------------
 
+  setLogLevel(config.logLevel);
+
   const app = express();
+
+  // Resolve `req.ip` correctly when behind a reverse proxy. Set 0 (false)
+  // to ignore X-Forwarded-For; >0 trusts that many proxy hops.
+  app.set('trust proxy', config.trustProxy);
 
   // Parse JSON bodies
   app.use(express.json({ limit: '1mb' }));
@@ -67,6 +74,14 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     }),
   );
 
+  // Hardening headers (cheap and broadly applicable)
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+  });
+
   // Health check (before auth — must be publicly accessible)
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', version: '0.1.0' });
@@ -76,7 +91,7 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   app.use('/api', rateLimitMiddleware(config));
 
   // Auth (applied to /api routes only)
-  app.use('/api', authMiddleware(config));
+  app.use('/api', authMiddleware(config, registry));
 
   // API routes
   const routes = createRoutes({
@@ -97,7 +112,7 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   // -------------------------------------------------------------------------
 
   const httpServer = createServer(app);
-  const wsHandler = new WsHandler(httpServer, bus, config);
+  const wsHandler = new WsHandler(httpServer, bus, config, registry);
 
   // -------------------------------------------------------------------------
   // Lifecycle
@@ -120,15 +135,11 @@ export function createHiveMindServer(config: Config): HiveMindServer {
 
         // Start HTTP server
         httpServer.listen(config.port, config.host, () => {
-          console.log(
-            `[HiveMind] Server listening on http://${config.host}:${String(config.port)}`,
-          );
-          console.log(`[HiveMind] WebSocket at ws://${config.host}:${String(config.port)}/ws`);
-          if (config.authEnabled) {
-            console.log('[HiveMind] Auth enabled — use Bearer token to connect');
-          } else {
-            console.log('[HiveMind] Auth disabled — open access');
-          }
+          logger.info('server', 'HTTP listening', {
+            url: `http://${config.host}:${String(config.port)}`,
+            ws: `ws://${config.host}:${String(config.port)}/ws`,
+            authEnabled: config.authEnabled,
+          });
           resolve();
         });
 

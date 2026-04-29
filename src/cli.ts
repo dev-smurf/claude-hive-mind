@@ -8,9 +8,10 @@
  */
 
 import { Command } from 'commander';
-import { loadConfig } from './config.js';
+import { loadConfig, validateConfig } from './config.js';
 import { createHiveMindServer } from './server/server.js';
 import { startStdioServer } from './mcp/stdio-server.js';
+import { logger, setLogLevel } from './util/logger.js';
 
 const program = new Command();
 
@@ -38,11 +39,18 @@ program
     if (!opts.auth) process.env.CHM_AUTH_ENABLED = 'false';
 
     const config = loadConfig();
+    setLogLevel(config.logLevel);
+
+    // Surface validation warnings (auth disabled in prod, wildcard CORS, etc.)
+    for (const warning of validateConfig(config)) {
+      logger.warn('config', warning);
+    }
+
     const server = createHiveMindServer(config);
 
     // Graceful shutdown
     const shutdown = async (): Promise<void> => {
-      console.log('\n[HiveMind] Shutting down...');
+      logger.info('cli', 'Shutting down');
       await server.stop();
       process.exit(0);
     };

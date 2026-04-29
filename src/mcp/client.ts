@@ -36,6 +36,8 @@ export interface ClientConfig {
 export class HiveMindClient {
   private readonly config: ClientConfig;
   private agentIdValue: AgentId | null = null;
+  /** Per-agent token returned by the server at registration. */
+  private agentToken: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: ClientConfig) {
@@ -61,8 +63,14 @@ export class HiveMindClient {
       ...(this.config.repoUrl !== undefined ? { repoUrl: this.config.repoUrl } : {}),
     });
 
-    const result = data as { id: string };
+    const result = data as { id: string; agentToken?: string };
     this.agentIdValue = agentId(result.id);
+    // Capture the agent-specific token. From this point forward, all
+    // subsequent requests authenticate as this agent (not the bootstrap
+    // admin token), limiting the blast radius of a compromised process.
+    if (typeof result.agentToken === 'string' && result.agentToken.length > 0) {
+      this.agentToken = result.agentToken;
+    }
 
     // Start heartbeat loop
     const interval = this.config.heartbeatIntervalMs ?? 10_000;
@@ -86,6 +94,7 @@ export class HiveMindClient {
     if (this.agentIdValue) {
       await this.delete(`/api/agents/${this.agentIdValue}`);
       this.agentIdValue = null;
+      this.agentToken = null;
     }
   }
 
@@ -212,8 +221,11 @@ export class HiveMindClient {
 
   private headers(): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (this.config.authToken) {
-      h.Authorization = `Bearer ${this.config.authToken}`;
+    // Prefer the per-agent token issued at registration. Fall back to the
+    // bootstrap admin token (used for the register call itself).
+    const token = this.agentToken ?? this.config.authToken;
+    if (token) {
+      h.Authorization = `Bearer ${token}`;
     }
     return h;
   }
