@@ -40,12 +40,12 @@ npx claude-hive-mind join <server-ip>
 Claude Hive Mind runs as an MCP server that AI assistants connect to via the Model Context Protocol. It also exposes a REST API and WebSocket endpoint for tool-agnostic integration.
 
 ```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+┌────────────-─┐  ┌─────────────┐  ┌─────────────┐
 │ Claude Code  │  │   Cursor    │  │   Copilot   │
 │  Instance A  │  │  Instance B │  │  Instance C │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │ MCP             │ REST            │ REST
-       └────────┬────────┴────────┬────────┘
+└──────┬───────┘  └──────┬──────┘  └──────┬──────┘
+       │ MCP             │ REST           │ REST
+       └────────┬────────┴────────┬───────┘
                 │                 │
          ┌──────▼─────────────────▼──────┐
          │      Claude Hive Mind         │
@@ -60,7 +60,7 @@ Claude Hive Mind runs as an MCP server that AI assistants connect to via the Mod
          │   │  Conflict Detector  │     │
          │   └─────────────────────┘     │
          │   ┌──────────┐ ┌───────────┐  │
-         │   │  SQLite   │ │ Dashboard │  │
+         │   │  SQLite  │ │ Dashboard │  │
          │   └──────────┘ └───────────┘  │
          └───────────────────────────────┘
 ```
