@@ -91,6 +91,26 @@ export const hiveUpdateBranchSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Always-on tools (visible even when not connected to any hive)
+// ---------------------------------------------------------------------------
+
+export const hiveListSavedSchema = z.object({});
+
+export const hiveConnectSchema = z.object({
+  name: z
+    .string()
+    .describe(
+      'Name of the saved hive to connect this session to. Run hive_list_saved to see available hives.',
+    ),
+  displayName: z.string().optional().describe('Optional override for this session display name'),
+});
+
+export const hiveDisconnectSchema = z.object({});
+
+/** Always-on schema for hive_status (whether connected or not). */
+export const hiveStatusSchemaAlwaysOn = z.object({});
+
+// ---------------------------------------------------------------------------
 // Tool metadata (for MCP registration)
 // ---------------------------------------------------------------------------
 
@@ -99,6 +119,43 @@ export interface ToolDefinition {
   readonly description: string;
   readonly inputSchema: z.ZodType;
 }
+
+/**
+ * Tools available BEFORE the session has joined a hive. These are always
+ * exposed by the MCP server even when no hive is connected, so the model
+ * can list/choose/connect to a hive on demand.
+ */
+export const ALWAYS_ON_TOOLS: readonly ToolDefinition[] = [
+  {
+    name: 'hive_list_saved',
+    description:
+      'List the hives this machine has been invited to (saved in ~/.claude-hive-mind/credentials.json). ' +
+      'Returns names you can pass to hive_connect.',
+    inputSchema: hiveListSavedSchema,
+  },
+  {
+    name: 'hive_connect',
+    description:
+      'Connect THIS Claude session to a saved hive. Other Claude sessions on the same ' +
+      'machine that have not called hive_connect remain disconnected. After this call, ' +
+      'the full set of hive_* tools (hive_claim_file, hive_share_knowledge, etc.) becomes available.',
+    inputSchema: hiveConnectSchema,
+  },
+  {
+    name: 'hive_disconnect',
+    description:
+      'Disconnect THIS session from the hive. The MCP server keeps running but ' +
+      'the hive_* tools are no longer available until you call hive_connect again.',
+    inputSchema: hiveDisconnectSchema,
+  },
+  {
+    name: 'hive_session_status',
+    description:
+      'Show whether this session is currently connected to a hive, and if so, which one ' +
+      'and as which agent. Always available, even when disconnected.',
+    inputSchema: hiveStatusSchemaAlwaysOn,
+  },
+] as const;
 
 export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
