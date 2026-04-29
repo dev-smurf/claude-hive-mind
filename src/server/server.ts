@@ -161,6 +161,7 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     messages,
     store,
     bus,
+    config,
   });
   app.use(routes);
 

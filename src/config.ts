@@ -81,6 +81,13 @@ export interface Config {
    * 'required': every request needs a Bearer token, including reads.
    */
   readonly readAccess: 'open' | 'required';
+  /**
+   * Publicly reachable URL of this hive (e.g. https://foo.trycloudflare.com).
+   * When set, /api/invites builds invite URLs against this host so peers off
+   * the LAN can join. Populated by `chm serve --public` after the cloudflared
+   * tunnel is up; empty otherwise.
+   */
+  readonly publicUrl: string | null;
   readonly corsOrigins: readonly string[];
   readonly rateLimitWindowMs: number;
   readonly rateLimitMaxRequests: number;
@@ -153,6 +160,7 @@ export function loadConfig(): Config {
     // dashboard without a token. Writes (POST/DELETE) still require auth.
     // Set CHM_READ_ACCESS=required to lock down reads too.
     readAccess: env('CHM_READ_ACCESS', 'open') === 'required' ? 'required' : 'open',
+    publicUrl: env('CHM_PUBLIC_URL', '') || null,
     corsOrigins: envList('CHM_CORS_ORIGINS', ['http://localhost:7777']),
     rateLimitWindowMs: envInt('CHM_RATE_LIMIT_WINDOW_MS', 60_000),
     rateLimitMaxRequests: envInt('CHM_RATE_LIMIT_MAX', 200),

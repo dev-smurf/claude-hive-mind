@@ -16,6 +16,7 @@ import { Command } from 'commander';
 import { loadConfig, validateConfig } from './config.js';
 import { createHiveMindServer } from './server/server.js';
 import { startStdioServer } from './mcp/stdio-server.js';
+import { startQuickTunnel, type TunnelHandle } from './util/cloudflared.js';
 import { logger, setLogLevel } from './util/logger.js';
 import {
   addHive,
@@ -53,45 +54,88 @@ program
   .option('-h, --host <host>', 'Host to bind to', '0.0.0.0')
   .option('--db <path>', 'SQLite database path', 'hive-mind.db')
   .option('--no-auth', 'Disable authentication')
-  .action(async (opts: { port: string; host: string; db: string; auth: boolean }) => {
-    if (opts.port) process.env.CHM_PORT = opts.port;
-    if (opts.host) process.env.CHM_HOST = opts.host;
-    if (opts.db) process.env.CHM_DB_PATH = opts.db;
-    if (!opts.auth) process.env.CHM_AUTH_ENABLED = 'false';
+  .option(
+    '--public',
+    'Expose this hive on the public internet via a cloudflared quick tunnel ' +
+      '(no signup, no port forwarding). Invites will use the public URL so ' +
+      'peers off your LAN can join.',
+  )
+  .action(
+    async (opts: {
+      port: string;
+      host: string;
+      db: string;
+      auth: boolean;
+      public?: boolean;
+    }) => {
+      if (opts.port) process.env.CHM_PORT = opts.port;
+      if (opts.host) process.env.CHM_HOST = opts.host;
+      if (opts.db) process.env.CHM_DB_PATH = opts.db;
+      if (!opts.auth) process.env.CHM_AUTH_ENABLED = 'false';
 
-    const config = loadConfig();
-    setLogLevel(config.logLevel);
+      // Spin up cloudflared FIRST, then load config, so CHM_PUBLIC_URL is
+      // visible when the invite endpoint constructs URLs.
+      let tunnel: TunnelHandle | null = null;
+      if (opts.public === true) {
+        const port = parseInt(opts.port, 10);
+        try {
+          tunnel = await startQuickTunnel(port, {
+            onProgress: (msg) => {
+              process.stdout.write(`  ${msg}\n`);
+            },
+          });
+          process.env.CHM_PUBLIC_URL = tunnel.url;
+        } catch (err) {
+          process.stderr.write(
+            `Failed to start cloudflared tunnel: ${err instanceof Error ? err.message : String(err)}\n` +
+              `Falling back to LAN-only mode.\n`,
+          );
+        }
+      }
 
-    for (const warning of validateConfig(config)) {
-      logger.warn('config', warning);
-    }
+      const config = loadConfig();
+      setLogLevel(config.logLevel);
 
-    const server = createHiveMindServer(config);
+      for (const warning of validateConfig(config)) {
+        logger.warn('config', warning);
+      }
 
-    const shutdown = async (): Promise<void> => {
-      logger.info('cli', 'Shutting down');
-      await server.stop();
-      process.exit(0);
-    };
+      const server = createHiveMindServer(config);
 
-    process.on('SIGINT', () => void shutdown());
-    process.on('SIGTERM', () => void shutdown());
+      let shuttingDown = false;
+      const shutdown = async (): Promise<void> => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        logger.info('cli', 'Shutting down');
+        if (tunnel) tunnel.stop();
+        await server.stop();
+        process.exit(0);
+      };
 
-    await server.start();
+      process.on('SIGINT', () => void shutdown());
+      process.on('SIGTERM', () => void shutdown());
 
-    // Friendly startup banner with the URL teammates need.
-    process.stdout.write(`
-╭───────────────────────────────────────────────────────╮
-│  Claude Hive Mind is running                          │
-│                                                       │
-│  Server   : http://${config.host.padEnd(15)}:${String(config.port).padEnd(5)}             │
-│  Dashboard: http://${config.host.padEnd(15)}:${String(config.port).padEnd(5)}             │
-│                                                       │
-│  Invite a teammate:                                   │
-│    claude-hive-mind invite                            │
-╰───────────────────────────────────────────────────────╯
+      await server.start();
+
+      const localUrl = `http://${config.host}:${String(config.port)}`;
+      const publicLine =
+        tunnel !== null
+          ? `│  Public   : ${tunnel.url.padEnd(40)}│\n`
+          : '';
+
+      process.stdout.write(`
+╭──────────────────────────────────────────────────────────╮
+│  Claude Hive Mind is running                             │
+│                                                          │
+│  Server   : ${localUrl.padEnd(40)}│
+│  Dashboard: ${localUrl.padEnd(40)}│
+${publicLine}│                                                          │
+│  Invite a teammate:                                      │
+│    chm invite                                            │
+╰──────────────────────────────────────────────────────────╯
 `);
-  });
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // invite — mint a new invite code
@@ -137,8 +181,14 @@ program
       process.stderr.write(`Failed to create invite (${String(res.status)}): ${text}\n`);
       process.exit(1);
     }
-    const data = (await res.json()) as { code: string; expiresAt: string };
-    const url = formatInviteUrl(opts.server, data.code);
+    const data = (await res.json()) as {
+      code: string;
+      expiresAt: string;
+      url?: string;
+    };
+    // Prefer the server-built URL — it embeds the public tunnel URL when
+    // `chm serve --public` is on, so peers off the LAN can actually reach it.
+    const url = data.url ?? formatInviteUrl(opts.server, data.code);
     const ttlMin = Math.round(ttlMs / 60_000);
 
     process.stdout.write(`

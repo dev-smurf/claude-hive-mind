@@ -27,7 +27,9 @@ import {
 import type { MessageService } from '../services/messages.js';
 import type { Store } from '../services/store.js';
 import type { EventBus } from '../services/event-bus.js';
+import type { Config } from '../config.js';
 import type { ISOTimestamp } from '../types.js';
+import { formatInviteUrl } from '../util/credentials.js';
 import {
   agentId,
   taskId,
@@ -71,6 +73,8 @@ export interface RouteServices {
   readonly store: Store;
   /** Bus to publish agent_status_update events for git/run status. */
   readonly bus: EventBus;
+  /** Live config — read for publicUrl when building invite URLs. */
+  readonly config: Config;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +199,7 @@ export function createRoutes(services: RouteServices): Router {
     messages,
     store,
     bus,
+    config,
   } = services;
 
   // Per-auth-context cache so admin-only data never leaks to agent tokens.
@@ -691,7 +696,22 @@ export function createRoutes(services: RouteServices): Router {
         ...(label !== undefined ? { label } : {}),
         ...(ttlMs !== undefined ? { ttlMs } : {}),
       });
-      res.status(201).json(result);
+
+      // Build a chm/chms URL the peer can paste verbatim. Prefer the public
+      // tunnel URL (set by `chm serve --public`) so the invite is reachable
+      // off-LAN; otherwise fall back to whatever host the requester used.
+      const baseUrl =
+        config.publicUrl ?? (req.headers.host ? `http://${req.headers.host}` : null);
+      let inviteUrl: string | undefined;
+      if (baseUrl) {
+        try {
+          inviteUrl = formatInviteUrl(baseUrl, result.code);
+        } catch {
+          // Malformed host header — leave url undefined, CLI falls back.
+        }
+      }
+
+      res.status(201).json({ ...result, ...(inviteUrl ? { url: inviteUrl } : {}) });
     } catch (err) {
       if (err instanceof InviteQuotaExceededError) {
         res.status(429).json({ error: err.message });

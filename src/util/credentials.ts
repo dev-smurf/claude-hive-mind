@@ -158,15 +158,18 @@ export interface ParsedInviteUrl {
 }
 
 /**
- * Parse a `chm://host:port#CODE` invite URL. Also accepts plain
- * "host:port#CODE" or full http(s) URLs with a fragment.
+ * Parse a `chm://host:port#CODE` invite URL (HTTP) or `chms://host#CODE`
+ * (HTTPS — used by `chm serve --public` cloudflared tunnels). Also
+ * accepts plain "host:port#CODE" or full http(s) URLs with a fragment.
  */
 export function parseInviteUrl(input: string): ParsedInviteUrl | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
 
   let normalized = trimmed;
-  if (normalized.startsWith('chm://')) {
+  if (normalized.startsWith('chms://')) {
+    normalized = `https://${normalized.slice('chms://'.length)}`;
+  } else if (normalized.startsWith('chm://')) {
     normalized = `http://${normalized.slice('chm://'.length)}`;
   } else if (!/^https?:\/\//.test(normalized)) {
     normalized = `http://${normalized}`;
@@ -188,7 +191,11 @@ export function parseInviteUrl(input: string): ParsedInviteUrl | null {
 }
 
 export function formatInviteUrl(serverUrl: string, code: string): string {
-  // Replace http(s) with chm scheme and append the code as fragment.
+  // Replace http(s) with the chm/chms scheme and append the code as fragment.
+  // `chms://` preserves the HTTPS hint so peers redeem against TLS endpoints
+  // (cloudflared quick tunnels), while plain `chm://` stays HTTP-friendly
+  // for LAN deployments.
   const url = new URL(serverUrl);
-  return `chm://${url.host}#${code}`;
+  const scheme = url.protocol === 'https:' ? 'chms' : 'chm';
+  return `${scheme}://${url.host}#${code}`;
 }
