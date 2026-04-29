@@ -678,10 +678,15 @@ export function createRoutes(services: RouteServices): Router {
     const rawBody = req.body as unknown;
     const body =
       rawBody !== null && typeof rawBody === 'object' && !Array.isArray(rawBody)
-        ? (rawBody as { label?: unknown; ttlMs?: unknown })
+        ? (rawBody as { label?: unknown; ttlMs?: unknown; maxUses?: unknown })
         : {};
     const label = typeof body.label === 'string' ? body.label.slice(0, 200) : undefined;
     const ttlMs = typeof body.ttlMs === 'number' && body.ttlMs > 0 ? body.ttlMs : undefined;
+    // Cap maxUses at 1000 so a typo can't create a permanent open hive.
+    const maxUses =
+      typeof body.maxUses === 'number' && body.maxUses > 0
+        ? Math.min(1000, Math.floor(body.maxUses))
+        : undefined;
 
     const auth = req.auth;
     const createdBy = auth?.authMode === 'admin' ? 'admin' : (auth?.authenticatedAgentId ?? '');
@@ -695,6 +700,7 @@ export function createRoutes(services: RouteServices): Router {
         createdBy,
         ...(label !== undefined ? { label } : {}),
         ...(ttlMs !== undefined ? { ttlMs } : {}),
+        ...(maxUses !== undefined ? { maxUses } : {}),
       });
 
       // Build a chm/chms URL the peer can paste verbatim. Prefer the public

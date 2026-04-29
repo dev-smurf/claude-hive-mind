@@ -112,6 +112,9 @@ program
           },
           body: JSON.stringify({
             ttlMs,
+            // Demo-mode default: invite is reusable up to 50 times within
+            // the TTL. Lets the host share one URL with multiple teammates.
+            maxUses: 50,
             ...(opts.label !== undefined ? { label: opts.label } : {}),
           }),
         });
@@ -142,7 +145,7 @@ program
       const ttlMin = Math.round(ttlMs / 60_000);
       const shareLine = inviteUrl ?? '(invite mint failed — run `chm invite` manually)';
       const accessHint = tunnel ? 'public · over the internet' : 'LAN only';
-      const ttlHint = `single-use · ${String(ttlMin)} min`;
+      const ttlHint = `reusable up to 50× · ${String(ttlMin)} min`;
 
       process.stdout.write(`
 ╭──────────────────────────────────────────────────────────────────╮
@@ -282,8 +285,16 @@ program
   )
   .option('-l, --label <label>', 'Optional label (e.g. "Felix\'s laptop")')
   .option('--ttl <minutes>', 'Time-to-live in minutes', '10')
+  .option('--uses <n>', 'Max number of redemptions (default 1 = single-use)', '1')
   .option('--token <token>', 'Auth token (falls back to CHM_AUTH_TOKEN env var)')
-  .action(async (opts: { server: string; label?: string; ttl: string; token?: string }) => {
+  .action(
+    async (opts: {
+      server: string;
+      label?: string;
+      ttl: string;
+      uses: string;
+      token?: string;
+    }) => {
     const token = opts.token ?? process.env.CHM_AUTH_TOKEN;
     if (!token) {
       process.stderr.write(
@@ -294,9 +305,11 @@ program
     }
 
     const ttlMs = Math.max(1, parseInt(opts.ttl, 10)) * 60 * 1000;
+    const maxUses = Math.max(1, parseInt(opts.uses, 10));
     const body = JSON.stringify({
       ...(opts.label !== undefined ? { label: opts.label } : {}),
       ttlMs,
+      maxUses,
     });
 
     const res = await fetch(`${opts.server}/api/invites`, {
@@ -322,6 +335,7 @@ program
     const url = data.url ?? formatInviteUrl(opts.server, data.code);
     const ttlMin = Math.round(ttlMs / 60_000);
 
+    const useHint = maxUses === 1 ? 'Single use' : `Up to ${String(maxUses)} uses`;
     process.stdout.write(`
 ┌─────────────────────────────────────────────────────────┐
 │  Invite created${opts.label ? ` for ${opts.label}` : ''}│
@@ -332,7 +346,7 @@ program
 │  Share with your teammate. They run:                    │
 │    claude-hive-mind join ${url.padEnd(28)}              │
 │                                                         │
-│  Expires in ${String(ttlMin).padEnd(2)} min. Single use.│
+│  Expires in ${String(ttlMin).padEnd(2)} min. ${useHint.padEnd(20)}│
 └─────────────────────────────────────────────────────────┘
 `);
   });

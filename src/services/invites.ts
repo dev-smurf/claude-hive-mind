@@ -44,12 +44,19 @@ export interface CreateInviteInput {
   readonly label?: string;
   /** TTL in milliseconds (default 10 min). */
   readonly ttlMs?: number;
+  /**
+   * How many times the invite can be redeemed (default 1 = single-use,
+   * preserving prior security posture). `chm start` mints with a higher
+   * value so the host can share one URL with multiple teammates.
+   */
+  readonly maxUses?: number;
 }
 
 export interface CreateInviteResult {
   readonly code: string;
   readonly expiresAt: string;
   readonly label: string | null;
+  readonly maxUses: number;
 }
 
 export interface RedeemInput {
@@ -156,6 +163,7 @@ export class InviteService {
       throw new Error('Failed to generate unique invite code');
     }
 
+    const maxUses = Math.max(1, Math.floor(input.maxUses ?? 1));
     const row: InviteRow = {
       code,
       created_by: input.createdBy,
@@ -165,10 +173,12 @@ export class InviteService {
       consumed_by: null,
       consumed_ip: null,
       label: input.label ?? null,
+      max_uses: maxUses,
+      use_count: 0,
     };
     this.store.insertInvite(row);
 
-    return { code, expiresAt: expires, label: row.label };
+    return { code, expiresAt: expires, label: row.label, maxUses };
   }
 
   /**
@@ -199,7 +209,7 @@ export class InviteService {
         revoked: 0,
       };
       this.store.insertJoinToken(row);
-      this.store.markInviteConsumed(invite.code, joinTokenId, input.remoteIp, now);
+      this.store.markInviteUsed(invite.code, joinTokenId, input.remoteIp, now);
 
       logger.info('invites', 'Invite redeemed', {
         code: invite.code,

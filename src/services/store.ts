@@ -337,10 +337,12 @@ const SCHEMA = `
     created_by   TEXT NOT NULL,        -- 'admin' or agent_id
     created_at   TEXT NOT NULL,
     expires_at   TEXT NOT NULL,
-    consumed_at  TEXT,
-    consumed_by  TEXT,                 -- join_token id once redeemed
-    consumed_ip  TEXT,
-    label        TEXT
+    consumed_at  TEXT,                 -- set when use_count reaches max_uses
+    consumed_by  TEXT,                 -- last redeemer's join_token id
+    consumed_ip  TEXT,                 -- last redeemer IP
+    label        TEXT,
+    max_uses     INTEGER NOT NULL DEFAULT 1,
+    use_count    INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS join_tokens (
@@ -411,6 +413,16 @@ function runMigrations(db: BetterSqlite3.Database): void {
     }
     if (!colNames.has('agent_token')) {
       db.exec("ALTER TABLE agents ADD COLUMN agent_token TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Multi-use invites — older databases had single-use only.
+    const inviteCols = db.prepare('PRAGMA table_info(invites)').all() as { name: string }[];
+    const inviteColNames = new Set(inviteCols.map((c) => c.name));
+    if (!inviteColNames.has('max_uses')) {
+      db.exec('ALTER TABLE invites ADD COLUMN max_uses INTEGER NOT NULL DEFAULT 1');
+    }
+    if (!inviteColNames.has('use_count')) {
+      db.exec('ALTER TABLE invites ADD COLUMN use_count INTEGER NOT NULL DEFAULT 0');
     }
 
     // Migrate file_ownership PK from (file_path, branch) to
@@ -964,29 +976,46 @@ export class Store {
   insertInvite(invite: InviteRow): void {
     this.db
       .prepare(
-        `INSERT INTO invites (code, created_by, created_at, expires_at, label)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO invites (code, created_by, created_at, expires_at, label, max_uses, use_count)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(invite.code, invite.created_by, invite.created_at, invite.expires_at, invite.label);
+      .run(
+        invite.code,
+        invite.created_by,
+        invite.created_at,
+        invite.expires_at,
+        invite.label,
+        invite.max_uses,
+        invite.use_count,
+      );
   }
 
-  /** Lookup a non-expired, non-consumed invite. Returns row or undefined. */
+  /** Lookup a non-expired invite that still has uses left. */
   getRedeemableInvite(code: string, now: string): InviteRow | undefined {
     return this.db
       .prepare(
         `SELECT * FROM invites
-         WHERE code = ? AND consumed_at IS NULL AND expires_at > ?`,
+         WHERE code = ? AND use_count < max_uses AND expires_at > ?`,
       )
       .get(code, now) as InviteRow | undefined;
   }
 
-  markInviteConsumed(code: string, joinTokenId: string, ip: string, now: string): void {
+  /**
+   * Atomically register a redemption: bump use_count, record the latest
+   * redeemer, and stamp consumed_at once the count reaches max_uses (so
+   * the existing "outstanding" semantics still hold for billing/audit).
+   */
+  markInviteUsed(code: string, joinTokenId: string, ip: string, now: string): void {
     this.db
       .prepare(
-        `UPDATE invites SET consumed_at = ?, consumed_by = ?, consumed_ip = ?
-         WHERE code = ? AND consumed_at IS NULL`,
+        `UPDATE invites
+            SET use_count   = use_count + 1,
+                consumed_by = ?,
+                consumed_ip = ?,
+                consumed_at = CASE WHEN use_count + 1 >= max_uses THEN ? ELSE consumed_at END
+          WHERE code = ? AND use_count < max_uses`,
       )
-      .run(now, joinTokenId, ip, code);
+      .run(joinTokenId, ip, now, code);
   }
 
   deleteInvite(code: string): boolean {
@@ -1004,12 +1033,12 @@ export class Store {
       .all(createdBy) as InviteRow[];
   }
 
-  /** Count outstanding (non-consumed, non-expired) invites for a creator. */
+  /** Count outstanding (still-redeemable, non-expired) invites for a creator. */
   countOutstandingInvitesBy(createdBy: string, now: string): number {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) as count FROM invites
-         WHERE created_by = ? AND consumed_at IS NULL AND expires_at > ?`,
+         WHERE created_by = ? AND use_count < max_uses AND expires_at > ?`,
       )
       .get(createdBy, now) as { count: number };
     return row.count;
@@ -1017,7 +1046,7 @@ export class Store {
 
   deleteExpiredInvites(now: string): number {
     return this.db
-      .prepare('DELETE FROM invites WHERE consumed_at IS NULL AND expires_at <= ?')
+      .prepare('DELETE FROM invites WHERE use_count < max_uses AND expires_at <= ?')
       .run(now).changes;
   }
 
@@ -1172,6 +1201,8 @@ export interface InviteRow {
   consumed_by: string | null;
   consumed_ip: string | null;
   label: string | null;
+  max_uses: number;
+  use_count: number;
 }
 
 export interface JoinTokenRow {
