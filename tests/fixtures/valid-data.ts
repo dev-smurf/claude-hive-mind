@@ -31,9 +31,9 @@ export const LATER = isoTimestamp(new Date('2026-04-28T13:00:00.000Z'));
 // Agents
 // ---------------------------------------------------------------------------
 
-export const AGENT_GABRIEL: AgentRecord = {
-  id: agentId('agent-gabriel-01'),
-  displayName: "Gabriel's Claude Code",
+export const AGENT_DAVE: AgentRecord = {
+  id: agentId('agent-dave-01'),
+  displayName: "Dave's Claude Code",
   tool: 'claude-code',
   status: 'active',
   currentTaskId: taskId('task-001'),
@@ -76,7 +76,7 @@ export const AGENT_IDLE: AgentRecord = {
 
 export const OWNERSHIP_EXCLUSIVE: FileOwnership = {
   filePath: 'src/auth/login.ts',
-  agentId: agentId('agent-gabriel-01'),
+  agentId: agentId('agent-dave-01'),
   mode: 'exclusive',
   taskId: taskId('task-001'),
   claimedAt: NOW,
@@ -132,7 +132,7 @@ export const KNOWLEDGE_FILE_SUMMARY: KnowledgeEntry = {
   key: 'file:src/auth/login.ts:summary',
   value:
     'Express route handler for /login. Accepts email+password, returns JWT. Uses bcrypt for password comparison.',
-  agentId: agentId('agent-gabriel-01'),
+  agentId: agentId('agent-dave-01'),
   sourceHash: 'abc123def456',
   createdAt: NOW,
   ttlSeconds: 3600,
@@ -153,7 +153,7 @@ export const KNOWLEDGE_PATTERN: KnowledgeEntry = {
 
 export const DECISION_AUTH: Decision = {
   id: decisionId('dec-001'),
-  agentId: agentId('agent-gabriel-01'),
+  agentId: agentId('agent-dave-01'),
   category: 'security',
   summary: 'Use JWT with RS256 for API authentication',
   rationale:
@@ -178,11 +178,11 @@ export const CONFLICT_FILE: Conflict = {
   id: conflictId('conflict-001'),
   type: 'file_contention',
   severity: 'high',
-  agentA: agentId('agent-gabriel-01'),
+  agentA: agentId('agent-dave-01'),
   agentB: agentId('agent-alice-01'),
   filePaths: ['src/auth/login.ts'],
   description:
-    "Both agents are modifying src/auth/login.ts. Gabriel has exclusive claim but Alice's task also targets this file.",
+    "Both agents are modifying src/auth/login.ts. Dave has exclusive claim but Alice's task also targets this file.",
   resolved: false,
   detectedAt: NOW,
 };
@@ -192,7 +192,7 @@ export const CONFLICT_FILE: Conflict = {
 // ---------------------------------------------------------------------------
 
 export const FULL_STATE: HiveMindState = {
-  agents: [AGENT_GABRIEL, AGENT_ALICE, AGENT_IDLE],
+  agents: [AGENT_DAVE, AGENT_ALICE, AGENT_IDLE],
   files: [OWNERSHIP_EXCLUSIVE, OWNERSHIP_SHARED],
   tasks: [TASK_PENDING, TASK_IN_PROGRESS],
   knowledge: [KNOWLEDGE_FILE_SUMMARY, KNOWLEDGE_PATTERN],
@@ -204,8 +204,8 @@ export const COMPACT_STATUS: HiveMindStatus = {
   activeAgents: 3,
   agentSummaries: [
     {
-      id: agentId('agent-gabriel-01'),
-      displayName: "Gabriel's Claude Code",
+      id: agentId('agent-dave-01'),
+      displayName: "Dave's Claude Code",
       status: 'active',
       currentTask: 'Implement JWT authentication',
     },
@@ -223,7 +223,7 @@ export const COMPACT_STATUS: HiveMindStatus = {
     },
   ],
   claimedFiles: [
-    { filePath: 'src/auth/login.ts', agentName: "Gabriel's Claude Code", mode: 'exclusive' },
+    { filePath: 'src/auth/login.ts', agentName: "Dave's Claude Code", mode: 'exclusive' },
     { filePath: 'src/types.ts', agentName: "Alice's Cursor", mode: 'shared' },
   ],
   activeConflicts: [
@@ -243,9 +243,9 @@ export const COMPACT_STATUS: HiveMindStatus = {
 
 export const SERVER_MESSAGES: readonly ServerMessage[] = [
   { type: 'state_sync', state: FULL_STATE },
-  { type: 'agent_joined', agent: AGENT_GABRIEL },
+  { type: 'agent_joined', agent: AGENT_DAVE },
   { type: 'agent_left', agentId: agentId('agent-bob-01') },
-  { type: 'agent_heartbeat', agentId: agentId('agent-gabriel-01'), timestamp: NOW },
+  { type: 'agent_heartbeat', agentId: agentId('agent-dave-01'), timestamp: NOW },
   { type: 'file_claimed', ownership: OWNERSHIP_EXCLUSIVE },
   {
     type: 'file_released',
@@ -266,7 +266,7 @@ export const SERVER_MESSAGES: readonly ServerMessage[] = [
 export const CLIENT_MESSAGES: readonly ClientMessage[] = [
   {
     type: 'register',
-    displayName: "Gabriel's Claude Code",
+    displayName: "Dave's Claude Code",
     tool: 'claude-code',
     workspacePath: '/home/gabriel/project',
   },

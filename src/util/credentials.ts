@@ -10,7 +10,7 @@
  *   {
  *     "hives": {
  *       "<short-name>": {
- *         "url":          "http://10.0.0.147:7777",
+ *         "url":          "http://192.0.2.10:7777",
  *         "joinToken":    "abc...",
  *         "joinTokenId":  "uuid",
  *         "label":        "Felix",
@@ -55,7 +55,19 @@ export type Credentials = z.infer<typeof credentialsSchema>;
 // ---------------------------------------------------------------------------
 
 export function credentialsDir(): string {
-  return process.env.CHM_CREDENTIALS_DIR ?? join(homedir(), '.claude-hive-mind');
+  const override = process.env.CHM_CREDENTIALS_DIR;
+  // Only honour the override if it's an absolute path with no traversal —
+  // otherwise an attacker controlling the env could redirect long-lived join
+  // tokens to a world-readable location.
+  if (
+    override !== undefined &&
+    override.length > 0 &&
+    override.startsWith('/') &&
+    !override.includes('..')
+  ) {
+    return override;
+  }
+  return join(homedir(), '.claude-hive-mind');
 }
 
 export function credentialsPath(): string {

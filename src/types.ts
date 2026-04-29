@@ -44,7 +44,7 @@ export type AgentTool = 'claude-code' | 'cursor' | 'copilot' | 'codex' | 'windsu
 /** A connected AI coding assistant instance. */
 export interface AgentRecord {
   readonly id: AgentId;
-  /** Human-readable name, e.g. "Gabriel's Claude Code" */
+  /** Human-readable name, e.g. "Dave's Claude Code" */
   readonly displayName: string;
   /** Which AI tool is running this agent */
   readonly tool: AgentTool;

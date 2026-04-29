@@ -36,7 +36,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
   };
 }
 
-const GABRIEL = agentId('agent-gabriel-01');
+const GABRIEL = agentId('agent-dave-01');
 const ALICE = agentId('agent-alice-01');
 
 function registerAgent(store: Store, id: string, branch?: string | null): void {
@@ -73,7 +73,7 @@ beforeEach(() => {
   });
 
   // Register test agents so foreign keys work
-  registerAgent(store, 'agent-gabriel-01');
+  registerAgent(store, 'agent-dave-01');
   registerAgent(store, 'agent-alice-01');
 });
 
@@ -346,7 +346,7 @@ describe('conflicts', () => {
     const open1 = store.getUnresolvedConflicts();
     expect(open1.some((c) => c.id === conflictId)).toBe(true);
 
-    // Gabriel releases — Alice never claimed, so the conflict should resolve
+    // Dave releases — Alice never claimed, so the conflict should resolve
     service.release('src/contested.ts', GABRIEL);
     const open2 = store.getUnresolvedConflicts();
     expect(open2.some((c) => c.id === conflictId)).toBe(false);
@@ -707,7 +707,7 @@ describe('scenarios', () => {
     });
     expect(blocked.granted).toBe(false);
 
-    // Gabriel releases
+    // Dave releases
     service.release('src/main.ts', GABRIEL);
 
     // Alice can now claim
@@ -735,7 +735,7 @@ describe('scenarios', () => {
     service.claim({ filePath: 'src/app.ts', agentId: GABRIEL, mode: 'exclusive' });
     service.claim({ filePath: 'src/app.ts', agentId: ALICE, mode: 'exclusive' });
 
-    // Gabriel's claim should still be intact
+    // Dave's claim should still be intact
     const ownership = service.getOwnership('src/app.ts');
     expect(ownership?.agentId).toBe(GABRIEL);
     expect(ownership?.mode).toBe('exclusive');

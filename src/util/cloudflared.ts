@@ -28,7 +28,19 @@ import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
 import { logger } from './logger.js';
 
-const RELEASE_BASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download';
+/**
+ * Pin to a specific cloudflared release so the download URL is deterministic.
+ * `latest` redirects to whatever is current at fetch time, which is unstable
+ * and harder to audit. Bump this when a new release is verified safe.
+ *
+ * Verify a candidate version before bumping:
+ *   curl -sI https://github.com/cloudflare/cloudflared/releases/download/<VER>/cloudflared-darwin-arm64.tgz
+ * Should return HTTP 302 → S3, not 404. Operators who want a different
+ * version can override by installing cloudflared on PATH themselves
+ * (which takes precedence over our cached download).
+ */
+const CLOUDFLARED_VERSION = '2025.5.0';
+const RELEASE_BASE = `https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}`;
 
 interface AssetInfo {
   /** Asset filename to fetch from `${RELEASE_BASE}/${asset}` */
@@ -57,7 +69,12 @@ function pickAsset(): AssetInfo {
 
 function cacheDir(): string {
   const xdg = process.env.XDG_CACHE_HOME;
-  const base = xdg && xdg.length > 0 ? xdg : path.join(os.homedir(), '.cache');
+  // XDG_CACHE_HOME, when set, must be an absolute path (per spec). Reject
+  // relative or traversal-laden values so an attacker controlling the env
+  // can't redirect the binary download outside the user's home tree.
+  const useXdg =
+    xdg !== undefined && xdg.length > 0 && path.isAbsolute(xdg) && !xdg.includes('..');
+  const base = useXdg ? xdg : path.join(os.homedir(), '.cache');
   return path.join(base, 'claude-hive-mind', 'bin');
 }
 
@@ -113,6 +130,13 @@ async function extractCloudflaredFromTgz(tgzPath: string, destPath: string): Pro
   while (off + 512 <= tarBuf.length) {
     const nameRaw = tarBuf.subarray(off, off + 100).toString('utf8').replace(/\0.*$/, '');
     if (nameRaw === '') break; // end-of-archive marker
+    // Path-traversal guard: never trust the entry name. We only WRITE the
+    // matched entry to a fixed `destPath`, but any future refactor that
+    // honours `nameRaw` for the destination would be a CVE waiting to
+    // happen. Reject up front.
+    if (nameRaw.includes('..') || path.isAbsolute(nameRaw) || nameRaw.includes('\0')) {
+      throw new Error(`Refusing to extract suspicious tar entry: ${JSON.stringify(nameRaw)}`);
+    }
     const sizeOctal = tarBuf
       .subarray(off + 124, off + 136)
       .toString('utf8')

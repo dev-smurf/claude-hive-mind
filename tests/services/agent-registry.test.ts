@@ -38,7 +38,7 @@ function makeConfig(overrides: Partial<Config> = {}): Config {
 }
 
 const GABRIEL_INPUT: RegisterInput = {
-  displayName: "Gabriel's Claude Code",
+  displayName: "Dave's Claude Code",
   tool: 'claude-code',
   workspacePath: '/home/gabriel/project',
 };
@@ -86,7 +86,7 @@ describe('register', () => {
 
   it('sets displayName, tool, and workspacePath from input', () => {
     const agent = registry.register(GABRIEL_INPUT);
-    expect(agent.displayName).toBe("Gabriel's Claude Code");
+    expect(agent.displayName).toBe("Dave's Claude Code");
     expect(agent.tool).toBe('claude-code');
     expect(agent.workspacePath).toBe('/home/gabriel/project');
   });

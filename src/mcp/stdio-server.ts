@@ -360,6 +360,38 @@ async function handleConnect(
   };
 }
 
+/**
+ * Reject hive URLs that point at loopback, link-local, or RFC-1918 ranges
+ * — those are likely SSRF attempts (cloud metadata at 169.254.169.254,
+ * Docker bridges, internal services). The opt-out exists so genuine LAN
+ * use (chm://192.168.x.x:7777) keeps working when the operator wants it.
+ */
+function assertSafeHiveTarget(serverUrl: string): void {
+  if (process.env.CHM_ALLOW_PRIVATE_HIVES === '1') return;
+  let host: string;
+  let protocol: string;
+  try {
+    const u = new URL(serverUrl);
+    host = u.hostname;
+    protocol = u.protocol;
+  } catch {
+    throw new Error(`hive_join: malformed server URL: ${serverUrl}`);
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new Error(`hive_join: unsupported scheme '${protocol}' (only http/https allowed)`);
+  }
+  // Loopback, link-local, RFC-1918, IPv6 ULA / link-local. If the operator
+  // really wants a LAN hive, they set CHM_ALLOW_PRIVATE_HIVES=1.
+  const blocked =
+    /^(127\.|0\.|10\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|::1$|fc[0-9a-f]{2}:|fe80:|localhost$)/i;
+  if (blocked.test(host)) {
+    throw new Error(
+      `hive_join: refusing to redeem against private/loopback host '${host}'. ` +
+        `Set CHM_ALLOW_PRIVATE_HIVES=1 if this is intentional (e.g. LAN deployment).`,
+    );
+  }
+}
+
 async function handleJoin(
   session: SessionState,
   config: StdioServerConfig,
@@ -386,13 +418,18 @@ async function handleJoin(
     const fallback = typeof args.server === 'string' ? args.server : '';
     if (!fallback) {
       throw new Error(
-        'Bare invite code requires a "server" argument (e.g. http://10.0.0.147:7777). ' +
+        'Bare invite code requires a "server" argument (e.g. http://192.0.2.10:7777). ' +
           'Or pass the full chm:// URL instead.',
       );
     }
     serverUrl = fallback;
     code = invite;
   }
+
+  // SSRF guard: a malicious invite could point hive_join at internal services
+  // (cloud metadata endpoints, intranet hosts). Restrict to public-looking
+  // destinations unless explicitly opted out via CHM_ALLOW_PRIVATE_HIVES=1.
+  assertSafeHiveTarget(serverUrl);
 
   // Redeem the invite — this is anonymous on the server side.
   const res = await fetch(`${serverUrl}/api/invites/redeem`, {

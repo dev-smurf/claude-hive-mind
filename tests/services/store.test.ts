@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Store } from '../../src/services/store.js';
 import {
-  AGENT_GABRIEL,
+  AGENT_DAVE,
   AGENT_ALICE,
   AGENT_IDLE,
   OWNERSHIP_EXCLUSIVE,
@@ -39,9 +39,9 @@ afterEach(() => {
 
 describe('agents', () => {
   it('inserts and retrieves an agent', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    const agent = store.getAgent(AGENT_GABRIEL.id);
-    expect(agent).toEqual(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
+    const agent = store.getAgent(AGENT_DAVE.id);
+    expect(agent).toEqual(AGENT_DAVE);
   });
 
   it('returns undefined for non-existent agent', () => {
@@ -49,15 +49,15 @@ describe('agents', () => {
   });
 
   it('upserts (updates) an existing agent', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    const updated = { ...AGENT_GABRIEL, status: 'busy' as const };
+    store.upsertAgent(AGENT_DAVE);
+    const updated = { ...AGENT_DAVE, status: 'busy' as const };
     store.upsertAgent(updated);
-    expect(store.getAgent(AGENT_GABRIEL.id)?.status).toBe('busy');
+    expect(store.getAgent(AGENT_DAVE.id)?.status).toBe('busy');
   });
 
   it('lists all agents ordered by connectedAt', () => {
     store.upsertAgent(AGENT_ALICE);
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.upsertAgent(AGENT_IDLE);
     const all = store.getAllAgents();
     expect(all).toHaveLength(3);
@@ -65,37 +65,37 @@ describe('agents', () => {
   });
 
   it('updates agent status', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    store.updateAgentStatus(AGENT_GABRIEL.id, 'disconnected');
-    expect(store.getAgent(AGENT_GABRIEL.id)?.status).toBe('disconnected');
+    store.upsertAgent(AGENT_DAVE);
+    store.updateAgentStatus(AGENT_DAVE.id, 'disconnected');
+    expect(store.getAgent(AGENT_DAVE.id)?.status).toBe('disconnected');
   });
 
   it('updates agent heartbeat', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    store.updateAgentHeartbeat(AGENT_GABRIEL.id, LATER);
-    expect(store.getAgent(AGENT_GABRIEL.id)?.lastHeartbeat).toBe(LATER);
+    store.upsertAgent(AGENT_DAVE);
+    store.updateAgentHeartbeat(AGENT_DAVE.id, LATER);
+    expect(store.getAgent(AGENT_DAVE.id)?.lastHeartbeat).toBe(LATER);
   });
 
   it('updates agent current task', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    store.updateAgentTask(AGENT_GABRIEL.id, taskId('task-999'));
-    expect(store.getAgent(AGENT_GABRIEL.id)?.currentTaskId).toBe('task-999');
+    store.upsertAgent(AGENT_DAVE);
+    store.updateAgentTask(AGENT_DAVE.id, taskId('task-999'));
+    expect(store.getAgent(AGENT_DAVE.id)?.currentTaskId).toBe('task-999');
   });
 
   it('clears agent current task with null', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    store.updateAgentTask(AGENT_GABRIEL.id, null);
-    expect(store.getAgent(AGENT_GABRIEL.id)?.currentTaskId).toBeNull();
+    store.upsertAgent(AGENT_DAVE);
+    store.updateAgentTask(AGENT_DAVE.id, null);
+    expect(store.getAgent(AGENT_DAVE.id)?.currentTaskId).toBeNull();
   });
 
   it('deletes an agent', () => {
-    store.upsertAgent(AGENT_GABRIEL);
-    store.deleteAgent(AGENT_GABRIEL.id);
-    expect(store.getAgent(AGENT_GABRIEL.id)).toBeUndefined();
+    store.upsertAgent(AGENT_DAVE);
+    store.deleteAgent(AGENT_DAVE.id);
+    expect(store.getAgent(AGENT_DAVE.id)).toBeUndefined();
   });
 
   it('finds stale agents by heartbeat cutoff', () => {
-    store.upsertAgent(AGENT_GABRIEL); // heartbeat = NOW
+    store.upsertAgent(AGENT_DAVE); // heartbeat = NOW
     store.upsertAgent(AGENT_IDLE); // heartbeat = EARLIER
     const stale = store.getStaleAgents(NOW);
     expect(stale).toHaveLength(1);
@@ -117,7 +117,7 @@ describe('agents', () => {
 describe('file ownership', () => {
   beforeEach(() => {
     // Agents must exist for foreign key
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.upsertAgent(AGENT_ALICE);
   });
 
@@ -143,7 +143,7 @@ describe('file ownership', () => {
   it('lists files by agent', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
     store.upsertFileOwnership(OWNERSHIP_SHARED);
-    const gabrielFiles = store.getFilesByAgent(AGENT_GABRIEL.id);
+    const gabrielFiles = store.getFilesByAgent(AGENT_DAVE.id);
     expect(gabrielFiles).toHaveLength(1);
     expect(gabrielFiles[0]?.filePath).toBe('src/auth/login.ts');
   });
@@ -168,8 +168,8 @@ describe('file ownership', () => {
 
   it('deletes all files by agent', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
-    store.deleteFilesByAgent(AGENT_GABRIEL.id);
-    expect(store.getFilesByAgent(AGENT_GABRIEL.id)).toHaveLength(0);
+    store.deleteFilesByAgent(AGENT_DAVE.id);
+    expect(store.getFilesByAgent(AGENT_DAVE.id)).toHaveLength(0);
   });
 
   it('finds expired files', () => {
@@ -189,13 +189,13 @@ describe('file ownership', () => {
 
   it('counts files per agent', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
-    expect(store.countFilesByAgent(AGENT_GABRIEL.id)).toBe(1);
+    expect(store.countFilesByAgent(AGENT_DAVE.id)).toBe(1);
     expect(store.countFilesByAgent(AGENT_ALICE.id)).toBe(0);
   });
 
   it('cascades delete when agent is removed', () => {
     store.upsertFileOwnership(OWNERSHIP_EXCLUSIVE);
-    store.deleteAgent(AGENT_GABRIEL.id);
+    store.deleteAgent(AGENT_DAVE.id);
     expect(store.getFileOwnership(OWNERSHIP_EXCLUSIVE.filePath)).toBeUndefined();
   });
 });
@@ -206,7 +206,7 @@ describe('file ownership', () => {
 
 describe('tasks', () => {
   beforeEach(() => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.upsertAgent(AGENT_ALICE);
   });
 
@@ -257,9 +257,9 @@ describe('tasks', () => {
 
   it('assigns a task to an agent', () => {
     store.insertTask(TASK_PENDING);
-    store.assignTask(TASK_PENDING.id, AGENT_GABRIEL.id, NOW);
+    store.assignTask(TASK_PENDING.id, AGENT_DAVE.id, NOW);
     const task = store.getTask(TASK_PENDING.id);
-    expect(task?.assignedAgentId).toBe(AGENT_GABRIEL.id);
+    expect(task?.assignedAgentId).toBe(AGENT_DAVE.id);
     expect(task?.status).toBe('in_progress');
   });
 
@@ -291,7 +291,7 @@ describe('tasks', () => {
 
 describe('knowledge', () => {
   beforeEach(() => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.upsertAgent(AGENT_ALICE);
   });
 
@@ -359,7 +359,7 @@ describe('knowledge', () => {
 
   it('cascades delete when agent is removed', () => {
     store.upsertKnowledge(KNOWLEDGE_FILE_SUMMARY);
-    store.deleteAgent(AGENT_GABRIEL.id);
+    store.deleteAgent(AGENT_DAVE.id);
     expect(store.getKnowledge(KNOWLEDGE_FILE_SUMMARY.key)).toBeUndefined();
   });
 });
@@ -370,7 +370,7 @@ describe('knowledge', () => {
 
 describe('decisions', () => {
   beforeEach(() => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.upsertAgent(AGENT_ALICE);
   });
 
@@ -403,7 +403,7 @@ describe('decisions', () => {
 
   it('cascades delete when agent is removed', () => {
     store.insertDecision(DECISION_AUTH);
-    store.deleteAgent(AGENT_GABRIEL.id);
+    store.deleteAgent(AGENT_DAVE.id);
     expect(store.getDecision(DECISION_AUTH.id)).toBeUndefined();
   });
 });
@@ -414,7 +414,7 @@ describe('decisions', () => {
 
 describe('conflicts', () => {
   beforeEach(() => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.upsertAgent(AGENT_ALICE);
   });
 
@@ -459,7 +459,7 @@ describe('conflicts', () => {
 
   it('cascades delete when agent_a is removed', () => {
     store.insertConflict(CONFLICT_FILE);
-    store.deleteAgent(AGENT_GABRIEL.id); // agent_a
+    store.deleteAgent(AGENT_DAVE.id); // agent_a
     expect(store.getConflict(CONFLICT_FILE.id)).toBeUndefined();
   });
 
@@ -476,7 +476,7 @@ describe('conflicts', () => {
 
 describe('transactions', () => {
   it('commits on success', () => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.transaction(() => {
       store.upsertAgent(AGENT_ALICE);
       store.upsertAgent(AGENT_IDLE);
@@ -485,7 +485,7 @@ describe('transactions', () => {
   });
 
   it('rolls back on error', () => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     expect(() =>
       store.transaction(() => {
         store.upsertAgent(AGENT_ALICE);
@@ -497,7 +497,7 @@ describe('transactions', () => {
   });
 
   it('returns the function result', () => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     const result = store.transaction(() => {
       return store.getAllAgents().length;
     });
@@ -519,8 +519,8 @@ describe('schema', () => {
 
   it('WAL mode is enabled', () => {
     // This is tested implicitly by the store working, but verify explicitly
-    store.upsertAgent(AGENT_GABRIEL);
-    expect(store.getAgent(AGENT_GABRIEL.id)).toBeDefined();
+    store.upsertAgent(AGENT_DAVE);
+    expect(store.getAgent(AGENT_DAVE.id)).toBeDefined();
   });
 
   it('foreign keys are enforced', () => {
@@ -545,14 +545,14 @@ function rawDb(s: Store): DbHandle {
 
 describe('parseEnum row-level safety', () => {
   it('throws a clear error when an agent row has an invalid status value', () => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     // Bypass the domain layer and corrupt the row directly.
-    rawDb(store).prepare("UPDATE agents SET status = 'zombie' WHERE id = ?").run(AGENT_GABRIEL.id);
-    expect(() => store.getAgent(AGENT_GABRIEL.id)).toThrow(/Invalid agent\.status value in DB/);
+    rawDb(store).prepare("UPDATE agents SET status = 'zombie' WHERE id = ?").run(AGENT_DAVE.id);
+    expect(() => store.getAgent(AGENT_DAVE.id)).toThrow(/Invalid agent\.status value in DB/);
   });
 
   it('throws a clear error when a task row has an invalid priority value', () => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.insertTask(TASK_PENDING);
     rawDb(store)
       .prepare("UPDATE tasks SET priority = 'super-urgent' WHERE id = ?")
@@ -561,7 +561,7 @@ describe('parseEnum row-level safety', () => {
   });
 
   it('substitutes empty array when file_paths JSON is corrupt', () => {
-    store.upsertAgent(AGENT_GABRIEL);
+    store.upsertAgent(AGENT_DAVE);
     store.insertTask(TASK_PENDING);
     rawDb(store)
       .prepare("UPDATE tasks SET file_paths = 'not valid json' WHERE id = ?")

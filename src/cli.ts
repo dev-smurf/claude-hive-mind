@@ -117,6 +117,17 @@ program
 
       await server.start();
 
+      // Loud warning if open reads + public tunnel are both on — anyone on
+      // the internet can read every inter-agent DM. The combo is sometimes
+      // intentional (public demo) but worth surfacing every startup.
+      if (tunnel !== null && config.readAccess === 'open') {
+        process.stderr.write(
+          '\n⚠  SECURITY: readAccess=open + public tunnel = all messages and\n' +
+            '  state are world-readable at the public URL. Set CHM_READ_ACCESS=required\n' +
+            '  to require a token for reads, or run without --public for LAN-only mode.\n',
+        );
+      }
+
       const localUrl = `http://${config.host}:${String(config.port)}`;
       const publicLine =
         tunnel !== null
@@ -228,7 +239,7 @@ program
       if (!opts.server) {
         process.stderr.write(
           'Bare invite code requires --server <url>.\n' +
-            'Or pass the full URL like chm://10.0.0.147:7777#A4F2-9E7K\n',
+            'Or pass the full URL like chm://192.0.2.10:7777#A4F2-9E7K\n',
         );
         process.exit(1);
       }

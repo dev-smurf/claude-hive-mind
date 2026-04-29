@@ -26,7 +26,7 @@ import {
   isoTimestamp,
 } from '../src/schemas.js';
 import {
-  AGENT_GABRIEL,
+  AGENT_DAVE,
   AGENT_ALICE,
   AGENT_IDLE,
   OWNERSHIP_EXCLUSIVE,
@@ -195,7 +195,7 @@ describe('enum schemas', () => {
 
 describe('agentRecordSchema', () => {
   it('accepts a valid active agent', () => {
-    expect(agentRecordSchema.safeParse(AGENT_GABRIEL).success).toBe(true);
+    expect(agentRecordSchema.safeParse(AGENT_DAVE).success).toBe(true);
   });
 
   it('accepts a valid busy agent', () => {
@@ -207,27 +207,27 @@ describe('agentRecordSchema', () => {
   });
 
   it('rejects agent with empty displayName', () => {
-    const invalid = { ...AGENT_GABRIEL, displayName: '' };
+    const invalid = { ...AGENT_DAVE, displayName: '' };
     expect(agentRecordSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('rejects agent with whitespace-only displayName', () => {
-    const invalid = { ...AGENT_GABRIEL, displayName: '   ' };
+    const invalid = { ...AGENT_DAVE, displayName: '   ' };
     expect(agentRecordSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('rejects agent with invalid status', () => {
-    const invalid = { ...AGENT_GABRIEL, status: 'online' };
+    const invalid = { ...AGENT_DAVE, status: 'online' };
     expect(agentRecordSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('rejects agent with invalid tool', () => {
-    const invalid = { ...AGENT_GABRIEL, tool: 'vim' };
+    const invalid = { ...AGENT_DAVE, tool: 'vim' };
     expect(agentRecordSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('rejects agent with invalid timestamp', () => {
-    const invalid = { ...AGENT_GABRIEL, lastHeartbeat: 'not-a-date' };
+    const invalid = { ...AGENT_DAVE, lastHeartbeat: 'not-a-date' };
     expect(agentRecordSchema.safeParse(invalid).success).toBe(false);
   });
 
@@ -521,12 +521,12 @@ describe('edge cases', () => {
   });
 
   it('rejects numbers where strings are expected', () => {
-    const invalid = { ...AGENT_GABRIEL, id: 12345 };
+    const invalid = { ...AGENT_DAVE, id: 12345 };
     expect(agentRecordSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('strips extra fields (passthrough is not enabled)', () => {
-    const withExtra = { ...AGENT_GABRIEL, extraField: 'should be stripped' };
+    const withExtra = { ...AGENT_DAVE, extraField: 'should be stripped' };
     const result = agentRecordSchema.safeParse(withExtra);
     expect(result.success).toBe(true);
     if (result.success) {
@@ -535,11 +535,11 @@ describe('edge cases', () => {
   });
 
   it('trims whitespace from string fields', () => {
-    const padded = { ...AGENT_GABRIEL, displayName: '  Gabriel  ' };
+    const padded = { ...AGENT_DAVE, displayName: '  Dave  ' };
     const result = agentRecordSchema.safeParse(padded);
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.displayName).toBe('Gabriel');
+      expect(result.data.displayName).toBe('Dave');
     }
   });
 });

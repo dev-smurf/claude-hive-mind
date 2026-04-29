@@ -3,7 +3,7 @@ import { EventBus } from '../../src/services/event-bus.js';
 import type { ServerMessage } from '../../src/types.js';
 import { agentId, taskId, conflictId, decisionId, isoTimestamp } from '../../src/schemas.js';
 import {
-  AGENT_GABRIEL,
+  AGENT_DAVE,
   CONFLICT_FILE,
   FULL_STATE,
   COMPACT_STATUS,
@@ -38,7 +38,7 @@ describe('on / emit', () => {
     const listener = vi.fn();
     bus.on('agent_joined', listener);
 
-    const msg: ServerMessage = { type: 'agent_joined', agent: AGENT_GABRIEL };
+    const msg: ServerMessage = { type: 'agent_joined', agent: AGENT_DAVE };
     bus.emit(msg);
 
     expect(listener).toHaveBeenCalledOnce();
@@ -49,7 +49,7 @@ describe('on / emit', () => {
     const listener = vi.fn();
     bus.on('agent_left', listener);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener).not.toHaveBeenCalled();
   });
@@ -60,7 +60,7 @@ describe('on / emit', () => {
     bus.on('agent_joined', listener1);
     bus.on('agent_joined', listener2);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener1).toHaveBeenCalledOnce();
     expect(listener2).toHaveBeenCalledOnce();
@@ -72,8 +72,8 @@ describe('on / emit', () => {
     bus.on('agent_joined', joinListener);
     bus.on('agent_left', leaveListener);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
-    bus.emit({ type: 'agent_left', agentId: agentId('agent-gabriel-01') });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
+    bus.emit({ type: 'agent_left', agentId: agentId('agent-dave-01') });
 
     expect(joinListener).toHaveBeenCalledOnce();
     expect(leaveListener).toHaveBeenCalledOnce();
@@ -81,7 +81,7 @@ describe('on / emit', () => {
 
   it('does nothing when emitting with no listeners', () => {
     // Should not throw
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
   });
 
   it('prevents duplicate subscriptions of same function reference', () => {
@@ -89,7 +89,7 @@ describe('on / emit', () => {
     bus.on('agent_joined', listener);
     bus.on('agent_joined', listener); // same ref, Set deduplicates
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener).toHaveBeenCalledOnce();
   });
@@ -104,8 +104,8 @@ describe('wildcard (*)', () => {
     const listener = vi.fn();
     bus.on('*', listener);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
-    bus.emit({ type: 'agent_left', agentId: agentId('agent-gabriel-01') });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
+    bus.emit({ type: 'agent_left', agentId: agentId('agent-dave-01') });
     bus.emit({ type: 'conflict_detected', conflict: CONFLICT_FILE });
 
     expect(listener).toHaveBeenCalledTimes(3);
@@ -117,7 +117,7 @@ describe('wildcard (*)', () => {
     bus.on('agent_joined', specific);
     bus.on('*', wildcard);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(specific).toHaveBeenCalledOnce();
     expect(wildcard).toHaveBeenCalledOnce();
@@ -133,11 +133,11 @@ describe('unsubscribe', () => {
     const listener = vi.fn();
     const unsub = bus.on('agent_joined', listener);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
     expect(listener).toHaveBeenCalledOnce();
 
     unsub();
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
     expect(listener).toHaveBeenCalledOnce(); // still 1, not 2
   });
 
@@ -168,7 +168,7 @@ describe('unsubscribe', () => {
     bus.on('agent_joined', listener2);
 
     unsub1();
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener1).not.toHaveBeenCalled();
     expect(listener2).toHaveBeenCalledOnce();
@@ -184,8 +184,8 @@ describe('once', () => {
     const listener = vi.fn();
     bus.once('agent_joined', listener);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener).toHaveBeenCalledOnce();
   });
@@ -195,7 +195,7 @@ describe('once', () => {
     const unsub = bus.once('agent_joined', listener);
 
     unsub();
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener).not.toHaveBeenCalled();
   });
@@ -204,8 +204,8 @@ describe('once', () => {
     const listener = vi.fn();
     bus.once('*', listener);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
-    bus.emit({ type: 'agent_left', agentId: agentId('agent-gabriel-01') });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
+    bus.emit({ type: 'agent_left', agentId: agentId('agent-dave-01') });
 
     expect(listener).toHaveBeenCalledOnce();
   });
@@ -224,7 +224,7 @@ describe('error isolation', () => {
     bus.on('agent_joined', bad);
     bus.on('agent_joined', good);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(bad).toHaveBeenCalledOnce();
     expect(good).toHaveBeenCalledOnce(); // still called despite bad listener
@@ -239,7 +239,7 @@ describe('error isolation', () => {
     });
     bus.on('*', bad);
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     const calls = stderrText(stderrSpy);
     expect(calls).toMatch(/Wildcard listener error/);
@@ -307,7 +307,7 @@ describe('clear', () => {
     bus.on('agent_joined', listener);
     bus.clear();
 
-    bus.emit({ type: 'agent_joined', agent: AGENT_GABRIEL });
+    bus.emit({ type: 'agent_joined', agent: AGENT_DAVE });
 
     expect(listener).not.toHaveBeenCalled();
   });
@@ -320,7 +320,7 @@ describe('clear', () => {
 describe('all message types', () => {
   const allMessages: ServerMessage[] = [
     { type: 'state_sync', state: FULL_STATE },
-    { type: 'agent_joined', agent: AGENT_GABRIEL },
+    { type: 'agent_joined', agent: AGENT_DAVE },
     { type: 'agent_left', agentId: agentId('agent-01') },
     { type: 'agent_heartbeat', agentId: agentId('agent-01'), timestamp: isoTimestamp() },
     {
