@@ -73,6 +73,14 @@ export interface Config {
   /** Security */
   readonly authToken: string;
   readonly authEnabled: boolean;
+  /**
+   * Read access policy for the dashboard / public observers.
+   * 'open' (default): anonymous GET requests succeed (sanitized) so anyone
+   *   on the LAN/Tailscale can open the dashboard without a token. Writes
+   *   still require auth.
+   * 'required': every request needs a Bearer token, including reads.
+   */
+  readonly readAccess: 'open' | 'required';
   readonly corsOrigins: readonly string[];
   readonly rateLimitWindowMs: number;
   readonly rateLimitMaxRequests: number;
@@ -141,6 +149,10 @@ export function loadConfig(): Config {
     // Security
     authToken: generatedToken,
     authEnabled: envBool('CHM_AUTH_ENABLED', true),
+    // Default: open reads. Anyone on the LAN/Tailscale can view the
+    // dashboard without a token. Writes (POST/DELETE) still require auth.
+    // Set CHM_READ_ACCESS=required to lock down reads too.
+    readAccess: env('CHM_READ_ACCESS', 'open') === 'required' ? 'required' : 'open',
     corsOrigins: envList('CHM_CORS_ORIGINS', ['http://localhost:7777']),
     rateLimitWindowMs: envInt('CHM_RATE_LIMIT_WINDOW_MS', 60_000),
     rateLimitMaxRequests: envInt('CHM_RATE_LIMIT_MAX', 200),

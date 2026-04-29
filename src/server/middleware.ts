@@ -27,7 +27,7 @@ export function safeCompare(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 /** Authentication mode for the current request. */
-export type AuthMode = 'admin' | 'agent' | 'bootstrap';
+export type AuthMode = 'admin' | 'agent' | 'bootstrap' | 'anonymous';
 
 /** Properties added to req by authMiddleware. */
 export interface AuthContext {
@@ -74,6 +74,17 @@ export function authMiddleware(
     }
 
     const authHeader = req.headers.authorization;
+
+    // Anonymous-read mode: in 'open' policy, GET requests succeed without
+    // a token. Writes still flow through the regular auth check below.
+    // The token (if present) takes precedence — readers can still
+    // authenticate to get richer data (e.g. unsanitized fields for admin).
+    if (config.readAccess === 'open' && req.method === 'GET' && !authHeader) {
+      req.auth = { authMode: 'anonymous' };
+      next();
+      return;
+    }
+
     if (!authHeader?.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
       return;

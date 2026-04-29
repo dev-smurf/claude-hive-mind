@@ -6,25 +6,48 @@ import { clearToken, getToken } from './lib/auth';
 import { WsClient } from './lib/ws';
 import type { Agent, ServerMessage } from './lib/types';
 
+type AuthState = 'pending' | 'open' | 'authed' | 'login-required';
+
 export function App(): React.JSX.Element {
-  const [authed, setAuthed] = useState<boolean>(() => getToken() !== null);
+  // 'pending' = haven't probed the server yet
+  // 'open'    = anonymous read works (no token needed)
+  // 'authed'  = token validated
+  // 'login-required' = server needs a token; show the login screen
+  const [authState, setAuthState] = useState<AuthState>('pending');
   const [agents, setAgents] = useState<readonly Agent[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
 
+  // Probe the API on mount. If anonymous reads work, skip login entirely.
+  // Otherwise show the login screen.
+  useEffect(() => {
+    void (async () => {
+      try {
+        await api.get<unknown>('/api/agents');
+        setAuthState(getToken() !== null ? 'authed' : 'open');
+      } catch (err: unknown) {
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          setAuthState('login-required');
+        } else {
+          // Network error — try to show login as fallback.
+          setAuthState('login-required');
+        }
+      }
+    })();
+  }, []);
+
   const handleAuthenticated = useCallback(() => {
-    setAuthed(true);
+    setAuthState('authed');
   }, []);
 
   const handleLogout = useCallback(() => {
     clearToken();
-    setAuthed(false);
+    setAuthState('login-required');
     setAgents([]);
   }, []);
 
-  // Initial fetch + WebSocket subscription. Re-runs only when auth state
-  // flips so login/logout cleanly tear down the previous socket.
+  // Initial fetch + WebSocket subscription. Runs once auth probe resolves.
   useEffect(() => {
-    if (!authed) return;
+    if (authState !== 'open' && authState !== 'authed') return;
     let cancelled = false;
 
     const handleMessage = (msg: ServerMessage): void => {
@@ -67,13 +90,10 @@ export function App(): React.JSX.Element {
       }
     })();
 
-    const token = getToken();
-    if (!token) {
-      handleLogout();
-      return;
-    }
+    // WS connects with token if present, anonymously otherwise (the
+    // server allows anonymous WS subscribers in 'open' read-access mode).
     const ws = new WsClient({
-      token,
+      token: getToken(),
       onMessage: handleMessage,
       onStatusChange: setWsConnected,
     });
@@ -83,9 +103,12 @@ export function App(): React.JSX.Element {
       cancelled = true;
       ws.close();
     };
-  }, [authed, handleLogout]);
+  }, [authState, handleLogout]);
 
-  if (!authed) {
+  if (authState === 'pending') {
+    return <div className="login-shell" />;
+  }
+  if (authState === 'login-required') {
     return <Login onAuthenticated={handleAuthenticated} />;
   }
 

@@ -140,35 +140,46 @@ export class WsHandler {
 
     // Auth via Authorization header in upgrade request OR ?token= query
     // param (browsers can't set custom WS headers, so the dashboard uses
-    // the query form). Accepts admin or per-agent token. When using a
-    // per-agent token, the `agentId` query param must match.
+    // the query form). Accepts admin or per-agent token.
+    //
+    // In 'open' read-access mode, an unauthenticated subscriber is also
+    // allowed — they receive the same sanitized event stream that any
+    // anonymous /api/state caller would see.
     let resolvedAgentId: string | null = agentIdParam;
-    let isAdmin = !this.config.authEnabled; // open access defaults to admin
+    let isAdmin = !this.config.authEnabled;
     if (this.config.authEnabled) {
       const authHeader = req.headers.authorization;
       const queryToken = url.searchParams.get('token');
-      let token: string;
+      let token: string | null = null;
       if (authHeader?.startsWith('Bearer ')) {
         token = authHeader.slice(7);
       } else if (queryToken && queryToken.length > 0) {
         token = queryToken;
-      } else {
-        ws.close(4001, 'Missing Authorization header or ?token= query');
-        return;
       }
-      isAdmin = safeCompare(token, this.config.authToken);
 
-      if (!isAdmin) {
-        const agent = this.registry.getAgentByToken(token);
-        if (!agent) {
-          ws.close(4001, 'Invalid auth token');
+      if (token === null) {
+        if (this.config.readAccess === 'open') {
+          // Anonymous read-only subscriber.
+          isAdmin = false;
+          resolvedAgentId = null;
+        } else {
+          ws.close(4001, 'Missing Authorization header or ?token= query');
           return;
         }
-        if (agentIdParam && agentIdParam !== agent.id) {
-          ws.close(4003, 'Token does not match agentId');
-          return;
+      } else {
+        isAdmin = safeCompare(token, this.config.authToken);
+        if (!isAdmin) {
+          const agent = this.registry.getAgentByToken(token);
+          if (!agent) {
+            ws.close(4001, 'Invalid auth token');
+            return;
+          }
+          if (agentIdParam && agentIdParam !== agent.id) {
+            ws.close(4003, 'Token does not match agentId');
+            return;
+          }
+          resolvedAgentId = agent.id;
         }
-        resolvedAgentId = agent.id;
       }
     }
 

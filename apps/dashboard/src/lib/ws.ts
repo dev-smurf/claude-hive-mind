@@ -10,14 +10,15 @@
 import type { ServerMessage } from './types';
 
 export interface WsClientOptions {
-  readonly token: string;
+  /** Bearer token, or null for an anonymous read-only connection. */
+  readonly token: string | null;
   readonly onMessage: (msg: ServerMessage) => void;
   readonly onStatusChange: (connected: boolean) => void;
 }
 
 export class WsClient {
   private socket: WebSocket | null = null;
-  private readonly token: string;
+  private readonly token: string | null;
   private readonly onMessage: (msg: ServerMessage) => void;
   private readonly onStatusChange: (connected: boolean) => void;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -34,7 +35,10 @@ export class WsClient {
     this.closed = false;
     const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const host = window.location.host;
-    const url = `${protocol}://${host}/ws?token=${encodeURIComponent(this.token)}`;
+    const url =
+      this.token !== null
+        ? `${protocol}://${host}/ws?token=${encodeURIComponent(this.token)}`
+        : `${protocol}://${host}/ws`;
     const socket = new WebSocket(url);
     this.socket = socket;
 

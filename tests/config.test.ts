@@ -392,6 +392,7 @@ describe('validateConfig', () => {
       rateLimitWindowMs: 60_000,
       rateLimitMaxRequests: 200,
       trustProxy: 0,
+      readAccess: 'required',
       heartbeatIntervalMs: 10_000,
       heartbeatTimeoutMs: 30_000,
       staleAgentCleanupMs: 60_000,

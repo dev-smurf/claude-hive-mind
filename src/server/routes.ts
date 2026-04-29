@@ -933,7 +933,8 @@ export function createRoutes(services: RouteServices): Router {
    * Query: `?since=<iso>`, `?limit=<n>` (default 50, max 200).
    */
   router.get('/api/activity', (req: Request, res: Response) => {
-    if (!requireAuthAgent(req, res)) return;
+    // Open to anonymous readers — DMs in the feed are still scoped to
+    // the caller (anonymous sees only broadcasts, agents see their own).
     const since = queryParam(req, 'since') ?? null;
     const limitRaw = queryParam(req, 'limit');
     const limit = limitRaw ? Math.min(200, Math.max(1, parseInt(limitRaw, 10) || 50)) : 50;

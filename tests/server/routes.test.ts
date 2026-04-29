@@ -26,6 +26,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     rateLimitWindowMs: 60_000,
     rateLimitMaxRequests: 1000,
     trustProxy: 0,
+    readAccess: 'required',
     heartbeatIntervalMs: 10_000,
     heartbeatTimeoutMs: 30_000,
     staleAgentCleanupMs: 60_000,
@@ -2175,6 +2176,64 @@ describe('HTTP API', () => {
         id: string;
       }[];
       expect(after.length).toBe(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Open read-access mode (CHM_READ_ACCESS=open)
+  // -----------------------------------------------------------------------
+
+  describe('Open read-access mode', () => {
+    let openServer: HiveMindServer;
+    let openBase: string;
+
+    beforeEach(async () => {
+      openServer = createHiveMindServer(
+        testConfig({ authEnabled: true, authToken: 'admin', readAccess: 'open' }),
+      );
+      await openServer.start();
+      openBase = baseUrl(openServer);
+    });
+
+    afterEach(async () => {
+      await openServer.stop();
+    });
+
+    it('GET /api/agents works without a token in open mode', async () => {
+      const res = await fetch(`${openBase}/api/agents`); // NO Authorization
+      expect(res.status).toBe(200);
+    });
+
+    it('GET /api/state works anonymously', async () => {
+      const res = await fetch(`${openBase}/api/state`);
+      expect(res.status).toBe(200);
+    });
+
+    it('GET /api/activity works anonymously', async () => {
+      const res = await fetch(`${openBase}/api/activity`);
+      expect(res.status).toBe(200);
+    });
+
+    it('POST writes still require a token in open mode', async () => {
+      const res = await fetch(`${openBase}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'x', description: 'y' }),
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it('anonymous GET /api/agents returns sanitized records (no workspacePath)', async () => {
+      // Register an agent first (with token)
+      await post(
+        `${openBase}/api/agents/register`,
+        { displayName: 'Felix', tool: 'claude-code', workspacePath: '/secret' },
+        'admin',
+      );
+      const res = await fetch(`${openBase}/api/agents`);
+      const list = (await res.json()) as { workspacePath?: string }[];
+      // Anonymous → workspacePath should be stripped
+      expect(list[0]?.workspacePath).toBeUndefined();
     });
   });
 
