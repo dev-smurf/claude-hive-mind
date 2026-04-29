@@ -151,7 +151,6 @@ export const hiveJoinSchema = z.object({
         'If a bare code, also pass `server` with the host URL (http://host:7777).',
     ),
   server: z
-    .string()
     .url()
     .optional()
     .describe('Required only if `invite` is a bare code, not a chm:// URL.'),

@@ -96,7 +96,8 @@ function whichCloudflared(): string | null {
   try {
     const cmd = os.platform() === 'win32' ? 'where' : 'which';
     const out = execFileSync(cmd, ['cloudflared'], { encoding: 'utf8' }).trim();
-    return out.length > 0 ? out.split(/\r?\n/)[0]! : null;
+    const first = out.split(/\r?\n/)[0];
+    return first !== undefined && first.length > 0 ? first : null;
   } catch {
     return null;
   }

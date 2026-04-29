@@ -37,6 +37,10 @@ interface SessionState {
   hiveName: string | null;
 }
 
+interface ToolListNotifier {
+  sendToolListChanged(): Promise<void>;
+}
+
 export async function startStdioServer(config: StdioServerConfig): Promise<void> {
   const session: SessionState = { client: null, hiveName: null };
 
@@ -159,7 +163,7 @@ export async function startStdioServer(config: StdioServerConfig): Promise<void>
 async function dispatchTool(
   session: SessionState,
   config: StdioServerConfig,
-  server: Server,
+  server: ToolListNotifier,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
@@ -309,7 +313,7 @@ async function handleListSaved(): Promise<unknown> {
 async function handleConnect(
   session: SessionState,
   config: StdioServerConfig,
-  server: Server,
+  server: ToolListNotifier,
   args: Record<string, unknown>,
 ): Promise<unknown> {
   if (session.client) {
@@ -405,7 +409,7 @@ function assertSafeHiveTarget(serverUrl: string): void {
 async function handleJoin(
   session: SessionState,
   config: StdioServerConfig,
-  server: Server,
+  server: ToolListNotifier,
   args: Record<string, unknown>,
 ): Promise<unknown> {
   if (session.client) {
@@ -509,7 +513,10 @@ async function handleJoin(
   };
 }
 
-async function handleDisconnect(session: SessionState, server: Server): Promise<unknown> {
+async function handleDisconnect(
+  session: SessionState,
+  server: ToolListNotifier,
+): Promise<unknown> {
   if (!session.client) {
     return { connected: false, message: 'Not connected to any hive.' };
   }

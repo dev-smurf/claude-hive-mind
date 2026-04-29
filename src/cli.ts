@@ -67,9 +67,7 @@ program
     }) => {
       // Auto-generate an ephemeral admin token if the user didn't set one.
       // This is what makes `chm start` truly one-shot — no env var dance.
-      if (!process.env.CHM_AUTH_TOKEN) {
-        process.env.CHM_AUTH_TOKEN = randomBytes(32).toString('hex');
-      }
+      process.env.CHM_AUTH_TOKEN ??= randomBytes(32).toString('hex');
       process.env.CHM_PORT = opts.port;
       process.env.CHM_HOST = '0.0.0.0';
 
