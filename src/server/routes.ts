@@ -320,6 +320,14 @@ export function createRoutes(services: RouteServices): Router {
     });
   });
 
+  // Friendly hints for the other URL shapes agents tend to invent.
+  router.post('/api/files/release', (_req: Request, res: Response) => {
+    res.status(400).json({
+      error: 'No POST /api/files/release endpoint',
+      hint: 'Use DELETE /api/files/<file-path>?agentId=<id> to release a claim',
+    });
+  });
+
   router.delete('/api/files', (_req: Request, res: Response) => {
     res.status(400).json({
       error: 'Missing file path. Use DELETE /api/files/<file-path>?agentId=<id>',

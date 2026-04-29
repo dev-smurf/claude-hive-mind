@@ -315,8 +315,13 @@ export type ServerMessage =
       readonly type: 'file_released';
       readonly filePath: string;
       readonly agentId: AgentId;
-      /** How the claim ended: 'manual' (release call) or 'expired' (TTL). */
-      readonly reason: 'manual' | 'expired';
+      /**
+       * How the claim ended:
+       *   'manual'        — explicit release by the owning agent
+       *   'expired'       — TTL elapsed; sweeper reaped it
+       *   'disconnected'  — agent disconnected (manual or stale-cleanup); their claims auto-released
+       */
+      readonly reason: 'manual' | 'expired' | 'disconnected';
     }
   | { readonly type: 'task_created'; readonly task: Task }
   | { readonly type: 'task_updated'; readonly task: Task }

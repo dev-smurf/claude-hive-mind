@@ -181,10 +181,11 @@ export class AgentRegistry {
     this.store.updateAgentTask(id, null);
 
     // Route file release through the service so conflicts auto-resolve and
-    // file_released events fire. Fall back to a bulk delete if file
+    // file_released events fire with reason='disconnected' (distinct from
+    // an explicit per-file release). Fall back to a bulk delete if file
     // ownership wasn't wired (test setups).
     if (this.fileOwnership) {
-      this.fileOwnership.releaseAll(id);
+      this.fileOwnership.releaseAll(id, 'disconnected');
     } else {
       this.store.deleteFilesByAgent(id);
     }

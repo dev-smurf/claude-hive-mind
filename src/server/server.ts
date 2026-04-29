@@ -20,7 +20,12 @@ import { DecisionLog } from '../services/decision-log.js';
 import { ConflictDetector } from '../services/conflict-detector.js';
 import { InviteService } from '../services/invites.js';
 import { createRoutes } from './routes.js';
-import { authMiddleware, rateLimitMiddleware, errorHandler } from './middleware.js';
+import {
+  authMiddleware,
+  errorHandler,
+  rateLimitMiddleware,
+  strictRedeemRateLimit,
+} from './middleware.js';
 import { WsHandler } from './ws-handler.js';
 import { logger, setLogLevel } from '../util/logger.js';
 
@@ -121,14 +126,18 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     res.json({ status: 'ok', version: '0.1.0' });
   });
 
-  // Rate limiting
+  // Rate limiting (global)
   app.use('/api', rateLimitMiddleware(config));
 
+  // Stricter rate limit on the unauthenticated invite-redeem endpoint —
+  // 10 attempts / 5 min / IP. The global limiter alone (200/min) lets a
+  // brute-force run try thousands of codes per hour.
+  app.use('/api/invites/redeem', strictRedeemRateLimit());
+
   // Auth (applied to /api routes only) — except /api/invites/redeem which
-  // is the unauthenticated onboarding entry point (rate-limited heavily).
+  // is the unauthenticated onboarding entry point (rate-limited above).
   app.use('/api', (req, res, next) => {
     if (req.method === 'POST' && req.path === '/invites/redeem') {
-      // Skip auth for this single endpoint.
       next();
       return;
     }

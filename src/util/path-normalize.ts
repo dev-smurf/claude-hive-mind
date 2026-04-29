@@ -51,6 +51,17 @@ export function normalizeFilePath(input: string): string {
     throw new InvalidPathError('contains null byte');
   }
 
+  // Reject percent-encoded sequences (e.g. %2e%2e for `..`). They're almost
+  // never legitimate in repo-relative paths and they bypass the textual
+  // traversal checks below if a downstream consumer ever URL-decodes the
+  // stored path. Force callers to send the decoded form so all our checks
+  // operate on the same representation.
+  if (/%[0-9a-fA-F]{2}/.test(trimmed)) {
+    throw new InvalidPathError(
+      'percent-encoded sequences are not allowed (send the decoded path instead)',
+    );
+  }
+
   if (trimmed.startsWith('~')) {
     throw new InvalidPathError('home directory expansion not allowed');
   }

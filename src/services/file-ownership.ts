@@ -235,7 +235,13 @@ export class FileOwnershipService {
    * Release all file claims held by an agent.
    * Returns the number of claims released.
    */
-  releaseAll(agentId: AgentId): number {
+  /**
+   * Release all of an agent's claims. The `reason` is propagated to every
+   * file_released event — typically 'manual' when an agent calls release
+   * directly, 'disconnected' when the agent leaves the hive (graceful or
+   * stale-reaped).
+   */
+  releaseAll(agentId: AgentId, reason: 'manual' | 'disconnected' = 'manual'): number {
     const files = this.store.getFilesByAgent(agentId);
     if (files.length === 0) return 0;
 
@@ -248,7 +254,7 @@ export class FileOwnershipService {
         type: 'file_released',
         filePath: file.filePath,
         agentId,
-        reason: 'manual',
+        reason,
       });
       this.autoResolveConflicts(file.filePath);
     }

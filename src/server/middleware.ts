@@ -275,6 +275,44 @@ export function rateLimitMiddleware(config: Config): RequestHandler {
   };
 }
 
+/**
+ * Aggressive per-IP rate limiter for the unauthenticated invite-redeem
+ * endpoint. The global limiter (200/min) is too loose for a brute-force
+ * target — at 200/min an attacker could try 12k codes/hour against the
+ * 8-char alphabet. We cap at 10 attempts / 5 minutes / IP, which still
+ * leaves real onboarding fast (the user types the code once).
+ */
+export function strictRedeemRateLimit(): RequestHandler {
+  const WINDOW_MS = 5 * 60 * 1000;
+  const MAX = 10;
+  const clients = new Map<string, RateEntry>();
+
+  const cleanup = setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of clients) {
+      if (entry.resetAt <= now) clients.delete(ip);
+    }
+  }, WINDOW_MS);
+  cleanup.unref();
+
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const ip = req.ip ?? req.socket.remoteAddress ?? 'unknown';
+    const now = Date.now();
+    let entry = clients.get(ip);
+    if (!entry || entry.resetAt <= now) {
+      entry = { count: 0, resetAt: now + WINDOW_MS };
+      clients.set(ip, entry);
+    }
+    entry.count++;
+    if (entry.count > MAX) {
+      res.setHeader('Retry-After', String(Math.ceil((entry.resetAt - now) / 1000)));
+      res.status(429).json({ error: 'Too many invite redemption attempts' });
+      return;
+    }
+    next();
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Error handler — catches unhandled errors in routes
 // ---------------------------------------------------------------------------

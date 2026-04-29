@@ -225,7 +225,7 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('file_released'),
     filePath: nonEmptyString,
     agentId: nonEmptyString,
-    reason: z.enum(['manual', 'expired']),
+    reason: z.enum(['manual', 'expired', 'disconnected']),
   }),
   z.object({ type: z.literal('task_created'), task: taskSchema }),
   z.object({ type: z.literal('task_updated'), task: taskSchema }),

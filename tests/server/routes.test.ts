@@ -1274,6 +1274,24 @@ describe('HTTP API', () => {
       expect(res.status).toBe(400);
     });
 
+    it('rejects percent-encoded traversal (%2e%2e/etc/passwd)', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: '%2e%2e/etc/passwd',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects fully percent-encoded traversal (%2e%2e%2fetc/passwd)', async () => {
+      const res = await post(`${base}/api/files/claim`, {
+        filePath: '%2e%2e%2fetc/passwd',
+        agentId: agent.id,
+        mode: 'exclusive',
+      });
+      expect(res.status).toBe(400);
+    });
+
     it('accepts a normal repo-relative path', async () => {
       const res = await post(`${base}/api/files/claim`, {
         filePath: 'src/util/helper.ts',
@@ -1908,6 +1926,15 @@ describe('HTTP API', () => {
       const res = await get(`${base}/health`);
       expect(res.headers.get('x-powered-by')).toBeNull();
     });
+
+    it('POST /api/files/release returns hint instead of generic 404', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/files/release`, { agentId: a.id });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string; hint?: string };
+      expect(body.error).toBeTruthy();
+      expect(body.hint).toBeTruthy();
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -1926,6 +1953,25 @@ describe('HTTP API', () => {
     it('DELETE /api/files (no path) returns 400 with hint', async () => {
       const res = await del(`${base}/api/files`);
       expect(res.status).toBe(400);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Strict redeem rate limit
+  // -----------------------------------------------------------------------
+
+  describe('Strict invite-redeem rate limit', () => {
+    it('blocks after 10 attempts within the window', async () => {
+      // Try 12 redemptions of bogus codes from the same client.
+      const codes = Array.from({ length: 12 }, (_, i) => `AAAA-AA${i.toString().padStart(2, '0')}`);
+      const statuses: number[] = [];
+      for (const code of codes) {
+        const res = await post(`${base}/api/invites/redeem`, { code });
+        statuses.push(res.status);
+      }
+      // First 10 attempts hit the validator (404 not found), then 429 kicks in.
+      const blocked = statuses.filter((s) => s === 429).length;
+      expect(blocked).toBeGreaterThanOrEqual(2);
     });
   });
 
