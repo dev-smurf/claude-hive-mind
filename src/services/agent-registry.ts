@@ -284,6 +284,28 @@ export class AgentRegistry {
   }
 
   /**
+   * Bulk-mark every agent in the DB as 'disconnected'. Called once at
+   * server boot so the dashboard never shows ghost agents from the
+   * previous process lifecycle. Live agents whose MCP bridge survives
+   * the restart will revive themselves on their next heartbeat (the
+   * heartbeat path already promotes 'disconnected' → 'active'). Ghost
+   * agents stay marked disconnected and don't appear in
+   * getConnectedAgents().
+   *
+   * Doesn't emit agent_left — there are no WS clients yet at boot time,
+   * and these aren't real disconnect events: they're cleanup of stale
+   * DB rows from a prior process.
+   */
+  bootSweep(): void {
+    const reaped = this.store.markAllAgentsDisconnected();
+    if (reaped > 0) {
+      logger.info('agent-registry', 'Boot sweep marked stale agents disconnected', {
+        count: reaped,
+      });
+    }
+  }
+
+  /**
    * Start the periodic stale agent cleanup.
    * Runs at the interval configured in config.staleAgentCleanupMs.
    */

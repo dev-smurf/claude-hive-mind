@@ -222,6 +222,11 @@ export function createHiveMindServer(config: Config): HiveMindServer {
 
     start(): Promise<void> {
       return new Promise((resolve, reject) => {
+        // Wipe any 'active' status left in the DB by a previous process
+        // lifecycle — those agents can't possibly still be alive. Live
+        // ones revive themselves on their next heartbeat.
+        registry.bootSweep();
+
         // Start cleanup intervals
         registry.startCleanupInterval();
 

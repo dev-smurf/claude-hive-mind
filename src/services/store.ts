@@ -603,6 +603,17 @@ export class Store {
     this.db.prepare('UPDATE agents SET status = ? WHERE id = ?').run(status, id);
   }
 
+  /**
+   * Bulk-mark every non-disconnected agent as 'disconnected'. Used by the
+   * registry's boot sweep to clear ghosts from a previous process lifecycle.
+   * Returns the number of rows affected.
+   */
+  markAllAgentsDisconnected(): number {
+    return this.db
+      .prepare(`UPDATE agents SET status = 'disconnected' WHERE status != 'disconnected'`)
+      .run().changes;
+  }
+
   updateAgentHeartbeat(id: AgentId, timestamp: ISOTimestamp): void {
     this.db.prepare('UPDATE agents SET last_heartbeat = ? WHERE id = ?').run(timestamp, id);
   }
