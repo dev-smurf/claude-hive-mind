@@ -6,8 +6,6 @@
  * the hive server.
  */
 
-import { getToken } from './auth';
-
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -20,8 +18,6 @@ export class ApiError extends Error {
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
-  const token = getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
   const res = await fetch(path, {

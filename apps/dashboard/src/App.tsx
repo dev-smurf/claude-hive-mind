@@ -1,60 +1,41 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Login } from './components/Login';
+import { useEffect, useState } from 'react';
 import { AgentGraph } from './components/AgentGraph';
 import { api, ApiError } from './lib/api';
-import { clearToken, getToken } from './lib/auth';
 import { WsClient } from './lib/ws';
 import type { Agent, ServerMessage } from './lib/types';
 
-type AuthState = 'pending' | 'open' | 'authed' | 'login-required';
+type ProbeState = 'pending' | 'ready' | 'auth-required' | 'unreachable';
 
 export function App(): React.JSX.Element {
-  // 'pending' = haven't probed the server yet
-  // 'open'    = anonymous read works (no token needed)
-  // 'authed'  = token validated
-  // 'login-required' = server needs a token; show the login screen
-  const [authState, setAuthState] = useState<AuthState>('pending');
+  const [probe, setProbe] = useState<ProbeState>('pending');
   const [agents, setAgents] = useState<readonly Agent[]>([]);
-  const [wsConnected, setWsConnected] = useState(false);
 
-  // Probe the API on mount. If anonymous reads work, skip login entirely.
-  // Otherwise show the login screen.
+  // Probe the API. The hive defaults to `readAccess: open`, so reads
+  // succeed without a token. If they don't, fail loudly instead of
+  // showing a login form — the dashboard is intentionally tokenless.
   useEffect(() => {
     void (async () => {
       try {
-        await api.get<unknown>('/api/agents');
-        setAuthState(getToken() !== null ? 'authed' : 'open');
+        const list = await api.get<Agent[]>('/api/agents');
+        setAgents(list);
+        setProbe('ready');
       } catch (err: unknown) {
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-          setAuthState('login-required');
+          setProbe('auth-required');
         } else {
-          // Network error — try to show login as fallback.
-          setAuthState('login-required');
+          setProbe('unreachable');
         }
       }
     })();
   }, []);
 
-  const handleAuthenticated = useCallback(() => {
-    setAuthState('authed');
-  }, []);
-
-  const handleLogout = useCallback(() => {
-    clearToken();
-    setAuthState('login-required');
-    setAgents([]);
-  }, []);
-
-  // Initial fetch + WebSocket subscription. Runs once auth probe resolves.
   useEffect(() => {
-    if (authState !== 'open' && authState !== 'authed') return;
-    let cancelled = false;
+    if (probe !== 'ready') return;
 
     const handleMessage = (msg: ServerMessage): void => {
       if (msg.type === 'agent_joined') {
         const a = (msg as { agent: Agent }).agent;
         setAgents((prev) => {
-          // Replace if exists, append otherwise.
           const idx = prev.findIndex((x) => x.id === a.id);
           if (idx >= 0) {
             const next = [...prev];
@@ -74,67 +55,67 @@ export function App(): React.JSX.Element {
           ),
         );
       }
-      // Other event types (file_claimed, message_received, etc.) ignored
-      // for this first iteration — agents-only view.
     };
 
-    // Initial REST fetch so we have the current state on page load.
-    void (async () => {
-      try {
-        const list = await api.get<Agent[]>('/api/agents');
-        if (!cancelled) setAgents(list);
-      } catch (err: unknown) {
-        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
-          handleLogout();
-        }
-      }
-    })();
-
-    // WS connects with token if present, anonymously otherwise (the
-    // server allows anonymous WS subscribers in 'open' read-access mode).
     const ws = new WsClient({
-      token: getToken(),
+      token: null,
       onMessage: handleMessage,
-      onStatusChange: setWsConnected,
+      onStatusChange: () => {
+        // Reserved for future header indicator. The simulation breathes
+        // even when WS is disconnected, so we don't surface this state
+        // visually for now.
+      },
     });
     ws.connect();
-
     return () => {
-      cancelled = true;
       ws.close();
     };
-  }, [authState, handleLogout]);
+  }, [probe]);
 
-  if (authState === 'pending') {
-    return <div className="login-shell" />;
+  if (probe === 'pending') {
+    return <div className="app-shell" />;
   }
-  if (authState === 'login-required') {
-    return <Login onAuthenticated={handleAuthenticated} />;
+
+  if (probe === 'auth-required') {
+    return (
+      <div className="error-shell">
+        <div className="error-card">
+          <h2>Restricted</h2>
+          <p>
+            This hive runs in <code>required</code> read-access mode. Set{' '}
+            <code>CHM_READ_ACCESS=open</code> on the host or restart with the default config.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (probe === 'unreachable') {
+    return (
+      <div className="error-shell">
+        <div className="error-card">
+          <h2>Hive offline</h2>
+          <p>Could not reach the coordination server.</p>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="app-shell">
       <header className="app-header">
         <div className="brand">
-          <span className={`dot ${wsConnected ? '' : 'disconnected'}`} />
-          <span>Claude Hive Mind</span>
+          <span className="accent">·</span>&nbsp;&nbsp;Hive Mind
         </div>
         <div className="meta">
-          <span className="count">
-            {agents.length} agent{agents.length === 1 ? '' : 's'}
-          </span>
-          <button className="logout" onClick={handleLogout}>
-            Sign out
-          </button>
+          <span className="count">{agents.length}</span>
+          {agents.length === 1 ? 'agent' : 'agents'}
         </div>
       </header>
       <main className="graph-stage">
         {agents.length === 0 ? (
           <div className="graph-empty">
-            <div>No agents connected.</div>
-            <div className="hint">
-              Tell a teammate to run <code>hive_connect</code> in their Claude session.
-            </div>
+            <div className="ring">awaiting agents</div>
           </div>
         ) : (
           <AgentGraph agents={agents} />
