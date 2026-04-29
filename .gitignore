@@ -46,3 +46,6 @@ research/
 *.db
 *.db-shm
 *.db-wal
+apps/dashboard/tsconfig.tsbuildinfo
+apps/*/dist/
+apps/*/node_modules/
