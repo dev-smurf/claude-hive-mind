@@ -1957,6 +1957,173 @@ describe('HTTP API', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Messages — DMs and broadcasts
+  // -----------------------------------------------------------------------
+
+  describe('Messages', () => {
+    let agentA: AgentResponse;
+    let agentB: AgentResponse;
+
+    beforeEach(async () => {
+      agentA = await registerAgent(base, 'A');
+      agentB = await registerAgent(base, 'B');
+    });
+
+    // Note: authEnabled=false in this suite, so the route runs as admin —
+    // admin must include explicit fromAgentId on send.
+    it('agent can send a DM and recipient sees it', async () => {
+      const sendRes = await post(`${base}/api/messages`, {
+        fromAgentId: agentA.id,
+        toAgentId: agentB.id,
+        content: 'hey, working on auth',
+      });
+      expect(sendRes.status).toBe(201);
+      const msg = (await sendRes.json()) as { id: string; content: string };
+      expect(msg.content).toBe('hey, working on auth');
+
+      const inbox = (await (await get(`${base}/api/messages`)).json()) as {
+        toAgentId: string | null;
+        content: string;
+      }[];
+      expect(inbox.some((m) => m.content === 'hey, working on auth')).toBe(true);
+    });
+
+    it('null toAgentId broadcasts (visible to other agents)', async () => {
+      await post(`${base}/api/messages`, {
+        fromAgentId: agentA.id,
+        toAgentId: null,
+        content: 'decided to use Zod, FYI',
+      });
+      const inbox = (await (await get(`${base}/api/messages`)).json()) as {
+        toAgentId: string | null;
+        content: string;
+      }[];
+      expect(inbox.some((m) => m.toAgentId === null && m.content.includes('Zod'))).toBe(true);
+    });
+
+    it('rejects empty content', async () => {
+      const res = await post(`${base}/api/messages`, {
+        fromAgentId: agentA.id,
+        toAgentId: agentB.id,
+        content: '',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('?since= filters older messages', async () => {
+      const before = new Date().toISOString();
+      await new Promise((r) => setTimeout(r, 10));
+      await post(`${base}/api/messages`, {
+        fromAgentId: agentA.id,
+        toAgentId: null,
+        content: 'after the cursor',
+      });
+      const filtered = (await (
+        await get(`${base}/api/messages?since=${encodeURIComponent(before)}`)
+      ).json()) as { content: string }[];
+      expect(filtered.some((m) => m.content === 'after the cursor')).toBe(true);
+    });
+
+    it('admin send without fromAgentId returns 400', async () => {
+      const res = await post(`${base}/api/messages`, {
+        toAgentId: agentB.id,
+        content: 'hi',
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('admin send with unknown fromAgentId returns 404', async () => {
+      const res = await post(`${base}/api/messages`, {
+        fromAgentId: 'does-not-exist',
+        toAgentId: agentB.id,
+        content: 'hi',
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Agent metadata — git/run status
+  // -----------------------------------------------------------------------
+
+  describe('Agent metadata', () => {
+    it('agent publishes git status; metadata endpoint returns it', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/agents/${a.id}/git-status`, {
+        branch: 'main',
+        head: 'abc123',
+        dirtyFiles: 3,
+        aheadOfRemote: 1,
+        behindRemote: 0,
+      });
+      expect(res.status).toBe(200);
+
+      const meta = (await (await get(`${base}/api/agents/${a.id}/metadata`)).json()) as Record<
+        string,
+        { value: string }
+      >;
+      expect(meta.git).toBeTruthy();
+      expect(meta.git?.value).toContain('"branch":"main"');
+    });
+
+    it('agent publishes run result; metadata returns it under run:<command>', async () => {
+      const a = await registerAgent(base);
+      await post(`${base}/api/agents/${a.id}/run-status`, {
+        command: 'test',
+        success: true,
+        summary: '142/142 passed',
+        durationMs: 1234,
+      });
+      const meta = (await (await get(`${base}/api/agents/${a.id}/metadata`)).json()) as Record<
+        string,
+        { value: string }
+      >;
+      expect(meta['run:test']).toBeTruthy();
+      expect(meta['run:test']?.value).toContain('"success":true');
+    });
+
+    it('rejects malformed git status (bad number)', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/agents/${a.id}/git-status`, {
+        branch: 'main',
+        head: 'abc',
+        dirtyFiles: -1,
+        aheadOfRemote: 0,
+        behindRemote: 0,
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Activity feed
+  // -----------------------------------------------------------------------
+
+  describe('Activity feed', () => {
+    it('returns recent events in chronological order', async () => {
+      const a = await registerAgent(base);
+      await post(`${base}/api/files/claim`, {
+        filePath: 'src/feed.ts',
+        agentId: a.id,
+        mode: 'exclusive',
+      });
+      await post(`${base}/api/decisions`, {
+        agentId: a.id,
+        category: 'architecture',
+        summary: 'Use feature flags',
+        rationale: 'Allow staged rollout',
+      });
+
+      const feed = (await (await get(`${base}/api/activity?limit=20`)).json()) as {
+        type: string;
+      }[];
+      const types = new Set(feed.map((e) => e.type));
+      expect(types.has('file_claimed')).toBe(true);
+      expect(types.has('decision_logged')).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Strict redeem rate limit
   // -----------------------------------------------------------------------
 

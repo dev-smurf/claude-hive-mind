@@ -208,6 +208,37 @@ export class HiveMindClient {
     return this.post(`/api/agents/${this.requireAgentId()}/branch`, { branch });
   }
 
+  async sendMessage(toAgentId: string | null, content: string): Promise<unknown> {
+    return this.post('/api/messages', { toAgentId, content });
+  }
+
+  async getMessages(input: { since?: string; limit?: number }): Promise<unknown> {
+    const params = new URLSearchParams();
+    if (input.since) params.set('since', input.since);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    const qs = params.toString();
+    return this.get(`/api/messages${qs ? '?' + qs : ''}`);
+  }
+
+  async shareGitStatus(input: {
+    branch: string | null;
+    head: string | null;
+    dirtyFiles: number;
+    aheadOfRemote: number;
+    behindRemote: number;
+  }): Promise<unknown> {
+    return this.post(`/api/agents/${this.requireAgentId()}/git-status`, input);
+  }
+
+  async shareRunResult(input: {
+    command: string;
+    success: boolean;
+    summary: string;
+    durationMs: number;
+  }): Promise<unknown> {
+    return this.post(`/api/agents/${this.requireAgentId()}/run-status`, input);
+  }
+
   // -------------------------------------------------------------------------
   // Private HTTP helpers
   // -------------------------------------------------------------------------

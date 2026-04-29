@@ -228,6 +228,29 @@ async function dispatchTool(
       return client.resolveConflict(data.conflictId as string);
     case 'hive_update_branch':
       return client.updateBranch(data.branch as string);
+    case 'hive_send_message':
+      return client.sendMessage(data.toAgentId as string | null, data.content as string);
+    case 'hive_get_messages': {
+      const input: { since?: string; limit?: number } = {};
+      if (data.since !== undefined) input.since = data.since as string;
+      if (data.limit !== undefined) input.limit = data.limit as number;
+      return client.getMessages(input);
+    }
+    case 'hive_share_git_status':
+      return client.shareGitStatus({
+        branch: data.branch as string | null,
+        head: data.head as string | null,
+        dirtyFiles: data.dirtyFiles as number,
+        aheadOfRemote: data.aheadOfRemote as number,
+        behindRemote: data.behindRemote as number,
+      });
+    case 'hive_share_run_result':
+      return client.shareRunResult({
+        command: data.command as string,
+        success: data.success as boolean,
+        summary: data.summary as string,
+        durationMs: data.durationMs as number,
+      });
     default:
       throw new Error(`Unknown tool: ${toolName}`);
   }

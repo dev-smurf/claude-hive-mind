@@ -19,6 +19,7 @@ import { KnowledgeStore } from '../services/knowledge-store.js';
 import { DecisionLog } from '../services/decision-log.js';
 import { ConflictDetector } from '../services/conflict-detector.js';
 import { InviteService } from '../services/invites.js';
+import { MessageService } from '../services/messages.js';
 import { createRoutes } from './routes.js';
 import {
   authMiddleware,
@@ -53,6 +54,7 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   const decisions = new DecisionLog(store, bus);
   const conflicts = new ConflictDetector(store, bus);
   const invites = new InviteService(store);
+  const messages = new MessageService(store, bus);
 
   // Wire cross-service dependencies (avoid circular imports)
   registry.setTaskQueue(taskQueue);
@@ -153,6 +155,9 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     decisions,
     conflicts,
     invites,
+    messages,
+    store,
+    bus,
   });
   app.use(routes);
 

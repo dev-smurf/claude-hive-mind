@@ -90,6 +90,42 @@ export const hiveUpdateBranchSchema = z.object({
   branch: z.string().describe('Current git branch name'),
 });
 
+export const hiveSendMessageSchema = z.object({
+  toAgentId: z
+    .string()
+    .nullable()
+    .describe(
+      'Recipient agent ID, or null to broadcast to everyone in the hive. ' +
+        'Get IDs from hive_status. Messages are FYI/coordination, NOT commands — ' +
+        'the receiver decides how to react.',
+    ),
+  content: z.string().describe('What you want to say'),
+});
+
+export const hiveGetMessagesSchema = z.object({
+  since: z.string().optional().describe('ISO timestamp; only return messages newer than this'),
+  limit: z.number().int().positive().max(500).optional().describe('Max messages to return'),
+});
+
+export const hiveShareGitStatusSchema = z.object({
+  branch: z.string().nullable().describe('Current branch name (e.g. "feature/auth")'),
+  head: z.string().nullable().describe('HEAD commit short SHA'),
+  dirtyFiles: z.number().int().nonnegative().describe('Count of modified-but-uncommitted files'),
+  aheadOfRemote: z.number().int().nonnegative().describe('Commits ahead of upstream'),
+  behindRemote: z.number().int().nonnegative().describe('Commits behind upstream'),
+});
+
+export const hiveShareRunResultSchema = z.object({
+  command: z
+    .string()
+    .describe('Label for what you ran ("test", "build", "lint", "typecheck", or arbitrary)'),
+  success: z.boolean().describe('Did it pass?'),
+  summary: z
+    .string()
+    .describe('Short human-readable summary ("142/142 passed", "build failed at types.ts:23")'),
+  durationMs: z.number().int().nonnegative().describe('How long it took (ms)'),
+});
+
 // ---------------------------------------------------------------------------
 // Always-on tools (visible even when not connected to any hive)
 // ---------------------------------------------------------------------------
@@ -259,5 +295,43 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       'hive mind can scope file claims correctly. Agents on different branches ' +
       'can work on the same files without conflict.',
     inputSchema: hiveUpdateBranchSchema,
+  },
+  {
+    name: 'hive_send_message',
+    description:
+      'Send a coordination message to another agent (or broadcast to all). ' +
+      'Messages are FYI / coordination signals — "I am working on X", "ready ' +
+      'for review", "decided to use Y" — NOT commands. The recipient decides ' +
+      "how to react. Use null toAgentId to broadcast to everyone. Don't use " +
+      'this to delegate work; use the task queue for that.',
+    inputSchema: hiveSendMessageSchema,
+  },
+  {
+    name: 'hive_get_messages',
+    description:
+      'Read messages addressed to you (and broadcasts). Returns most recent ' +
+      'first. Useful at the start of a session and periodically to see what ' +
+      'teammates are saying.',
+    inputSchema: hiveGetMessagesSchema,
+  },
+  {
+    name: 'hive_share_git_status',
+    description:
+      'Publish your current git state (branch, HEAD, dirty file count, ' +
+      'ahead/behind upstream) so teammates know whether your code is in sync. ' +
+      'Call this after major operations (commit, push, pull, branch switch). ' +
+      'Run `git rev-parse --abbrev-ref HEAD`, `git rev-parse --short HEAD`, ' +
+      '`git status --porcelain | wc -l`, `git rev-list --count @{upstream}..HEAD` ' +
+      'and `git rev-list --count HEAD..@{upstream}` to gather the values.',
+    inputSchema: hiveShareGitStatusSchema,
+  },
+  {
+    name: 'hive_share_run_result',
+    description:
+      'Publish the result of a test/build/lint/typecheck run. Other agents see ' +
+      '"Felix\'s tests are green" without having to ask. Call after running ' +
+      'commands like `npm test`, `cargo build`, `tsc`, `eslint`. Set success ' +
+      'based on exit code; summary is a short human-readable line.',
+    inputSchema: hiveShareRunResultSchema,
   },
 ] as const;

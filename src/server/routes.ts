@@ -24,6 +24,10 @@ import {
   type InviteService,
   normalizeInviteCode,
 } from '../services/invites.js';
+import type { MessageService } from '../services/messages.js';
+import type { Store } from '../services/store.js';
+import type { EventBus } from '../services/event-bus.js';
+import type { ISOTimestamp } from '../types.js';
 import {
   agentId,
   taskId,
@@ -35,6 +39,9 @@ import {
   assignTaskBodySchema,
   shareKnowledgeBodySchema,
   logDecisionBodySchema,
+  sendMessageBodySchema,
+  gitStatusBodySchema,
+  runStatusBodySchema,
 } from '../schemas.js';
 import type { AgentRecord, TaskId } from '../types.js';
 import { InvalidPathError } from '../util/path-normalize.js';
@@ -59,6 +66,11 @@ export interface RouteServices {
   readonly decisions: DecisionLog;
   readonly conflicts: ConflictDetector;
   readonly invites: InviteService;
+  readonly messages: MessageService;
+  /** Used directly for agent_metadata read/write (no service wrapper needed). */
+  readonly store: Store;
+  /** Bus to publish agent_status_update events for git/run status. */
+  readonly bus: EventBus;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,7 +184,18 @@ interface StateCache {
 
 export function createRoutes(services: RouteServices): Router {
   const router = Router();
-  const { registry, fileOwnership, taskQueue, knowledge, decisions, conflicts, invites } = services;
+  const {
+    registry,
+    fileOwnership,
+    taskQueue,
+    knowledge,
+    decisions,
+    conflicts,
+    invites,
+    messages,
+    store,
+    bus,
+  } = services;
 
   // Per-auth-context cache so admin-only data never leaks to agent tokens.
   const stateCache = new Map<string, StateCache>();
@@ -749,6 +772,227 @@ export function createRoutes(services: RouteServices): Router {
       return;
     }
     res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Messages — agent-to-agent coordination signals (NOT commands)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Send a message. Recipient `toAgentId` can be null to broadcast.
+   * Sender is derived from the auth token (admin uses an explicit fromAgentId).
+   */
+  router.post('/api/messages', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+    const body = parseBody(req, res, sendMessageBodySchema);
+    if (!body) return;
+
+    const auth = req.auth;
+    if (!auth) {
+      res.status(401).json({ error: 'Not authenticated' });
+      return;
+    }
+    // Sender = the authenticated agent (admin can't send "as" without an id).
+    if (auth.authMode === 'admin') {
+      // Admin needs to specify a sender (we don't pretend admin is an agent).
+      const adminFrom = (req.body as { fromAgentId?: unknown }).fromAgentId;
+      if (typeof adminFrom !== 'string') {
+        res.status(400).json({ error: 'Admin senders must include an explicit `fromAgentId`' });
+        return;
+      }
+      const fromAgent = registry.getAgent(agentId(adminFrom));
+      if (!fromAgent) {
+        res.status(404).json({ error: 'fromAgentId does not match any registered agent' });
+        return;
+      }
+      const msg = messages.send({
+        fromAgentId: agentId(adminFrom),
+        toAgentId: body.toAgentId !== null ? agentId(body.toAgentId) : null,
+        content: body.content,
+      });
+      res.status(201).json(msg);
+      return;
+    }
+
+    const fromId = auth.authenticatedAgentId;
+    if (!fromId) {
+      res.status(401).json({ error: 'Not authenticated' });
+      return;
+    }
+    const msg = messages.send({
+      fromAgentId: agentId(fromId),
+      toAgentId: body.toAgentId !== null ? agentId(body.toAgentId) : null,
+      content: body.content,
+    });
+    res.status(201).json(msg);
+  });
+
+  /**
+   * List messages visible to the caller. Admin sees all; agents see
+   * broadcasts + DMs to/from themselves.
+   *
+   * Query: `?since=<iso>` returns only newer messages, `?limit=<n>` caps
+   * the result count (default 100, max 500).
+   */
+  router.get('/api/messages', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+    const since = queryParam(req, 'since') ?? null;
+    const limitRaw = queryParam(req, 'limit');
+    const limit = limitRaw ? Math.min(500, Math.max(1, parseInt(limitRaw, 10) || 100)) : 100;
+
+    if (isAdmin(req)) {
+      res.json(messages.getAll({ since, limit }));
+      return;
+    }
+    const aid = req.auth?.authenticatedAgentId;
+    if (!aid) {
+      res.status(401).json({ error: 'Not authenticated' });
+      return;
+    }
+    res.json(messages.getForAgent(agentId(aid), { since, limit }));
+  });
+
+  /** Sender (or admin) can delete a message they sent. */
+  router.delete('/api/messages/:id', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+    const msgId = param(req, 'id');
+    const existing = messages.get(msgId);
+    if (!existing) {
+      res.status(404).json({ error: 'Message not found' });
+      return;
+    }
+    if (!requireOwnerOrAdmin(req, res, existing.fromAgentId)) return;
+    messages.delete(msgId);
+    res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------------------
+  // Agent metadata — git status, run status (test/build), etc.
+  // -------------------------------------------------------------------------
+
+  /**
+   * An agent shares its current git status. Pure FYI — other agents read
+   * this to know if they should pull, what branch you're on, whether you
+   * have uncommitted changes.
+   */
+  router.post('/api/agents/:id/git-status', (req: Request, res: Response) => {
+    const id = param(req, 'id');
+    if (!requireAgentMatch(req, res, id)) return;
+    const body = parseBody(req, res, gitStatusBodySchema);
+    if (!body) return;
+
+    const value = JSON.stringify(body);
+    store.upsertAgentMetadata(agentId(id), 'git', value);
+    bus.emit({
+      type: 'agent_status_update',
+      agentId: agentId(id),
+      key: 'git',
+      value,
+      updatedAt: new Date().toISOString() as ISOTimestamp,
+    });
+    res.json({ ok: true });
+  });
+
+  /**
+   * An agent shares the result of running tests/build/lint/typecheck.
+   * Other agents see "Felix's tests are green" without having to ask.
+   */
+  router.post('/api/agents/:id/run-status', (req: Request, res: Response) => {
+    const id = param(req, 'id');
+    if (!requireAgentMatch(req, res, id)) return;
+    const body = parseBody(req, res, runStatusBodySchema);
+    if (!body) return;
+
+    const value = JSON.stringify({ ...body, at: new Date().toISOString() });
+    store.upsertAgentMetadata(agentId(id), `run:${body.command}`, value);
+    bus.emit({
+      type: 'agent_status_update',
+      agentId: agentId(id),
+      key: `run:${body.command}`,
+      value,
+      updatedAt: new Date().toISOString() as ISOTimestamp,
+    });
+    res.json({ ok: true });
+  });
+
+  /** Read all metadata an agent has published. */
+  router.get('/api/agents/:id/metadata', (req: Request, res: Response) => {
+    const id = param(req, 'id');
+    res.json(store.getAgentMetadata(agentId(id)));
+  });
+
+  // -------------------------------------------------------------------------
+  // Activity feed — chronological history of recent hive events
+  // -------------------------------------------------------------------------
+
+  /**
+   * Returns recent hive activity in chronological order: file claims/releases,
+   * decisions, knowledge, conflicts, messages, run statuses. Useful as the
+   * "what just happened" feed in the dashboard.
+   *
+   * Query: `?since=<iso>`, `?limit=<n>` (default 50, max 200).
+   */
+  router.get('/api/activity', (req: Request, res: Response) => {
+    if (!requireAuthAgent(req, res)) return;
+    const since = queryParam(req, 'since') ?? null;
+    const limitRaw = queryParam(req, 'limit');
+    const limit = limitRaw ? Math.min(200, Math.max(1, parseInt(limitRaw, 10) || 50)) : 50;
+    const sinceTs = since ? Date.parse(since) : 0;
+
+    interface ActivityItem {
+      type: string;
+      at: string;
+      payload: unknown;
+    }
+    const items: ActivityItem[] = [];
+
+    // File ownership claims (we have claimedAt)
+    for (const f of fileOwnership.getAllOwnerships()) {
+      if (Date.parse(f.claimedAt) > sinceTs) {
+        items.push({ type: 'file_claimed', at: f.claimedAt, payload: f });
+      }
+    }
+    // Tasks (created/updated)
+    for (const t of taskQueue.getAllTasks()) {
+      if (Date.parse(t.createdAt) > sinceTs) {
+        items.push({ type: 'task_created', at: t.createdAt, payload: t });
+      }
+      if (Date.parse(t.updatedAt) > sinceTs && t.updatedAt !== t.createdAt) {
+        items.push({ type: 'task_updated', at: t.updatedAt, payload: t });
+      }
+    }
+    // Decisions
+    for (const d of decisions.getAll()) {
+      if (Date.parse(d.timestamp) > sinceTs) {
+        items.push({ type: 'decision_logged', at: d.timestamp, payload: d });
+      }
+    }
+    // Knowledge
+    for (const k of knowledge.getAll()) {
+      if (Date.parse(k.createdAt) > sinceTs) {
+        items.push({ type: 'knowledge_shared', at: k.createdAt, payload: k });
+      }
+    }
+    // Conflicts
+    for (const c of conflicts.getAll()) {
+      if (Date.parse(c.detectedAt) > sinceTs) {
+        items.push({ type: 'conflict_detected', at: c.detectedAt, payload: c });
+      }
+    }
+    // Messages (only those visible to the caller)
+    const aid = req.auth?.authenticatedAgentId;
+    const visibleMessages = isAdmin(req)
+      ? messages.getAll({ since, limit: 200 })
+      : aid
+        ? messages.getForAgent(agentId(aid), { since, limit: 200 })
+        : [];
+    for (const m of visibleMessages) {
+      items.push({ type: 'message_received', at: m.createdAt, payload: m });
+    }
+
+    // Sort newest-first and cap
+    items.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    res.json(items.slice(0, limit));
   });
 
   // -------------------------------------------------------------------------

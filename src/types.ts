@@ -234,6 +234,44 @@ export interface Conflict {
 }
 
 // ---------------------------------------------------------------------------
+// Messages — agent-to-agent coordination signals (NOT commands)
+// ---------------------------------------------------------------------------
+
+/**
+ * A coordination message between two agents (or a broadcast to all).
+ *
+ * Messages are FYI / coordination signals — "I'm doing X", "ready for review",
+ * "I'll handle the database part" — NOT orders. The receiving agent decides
+ * whether to react. There is no auto-execution of message contents.
+ */
+export interface AgentMessage {
+  readonly id: string;
+  readonly fromAgentId: AgentId;
+  /** Recipient agent ID, or null for broadcast (everyone in the hive). */
+  readonly toAgentId: AgentId | null;
+  readonly content: string;
+  readonly createdAt: ISOTimestamp;
+}
+
+/** Standard well-known metadata keys for `agent_metadata`. */
+export interface AgentGitStatus {
+  readonly branch: string | null;
+  readonly head: string | null;
+  readonly dirtyFiles: number;
+  readonly aheadOfRemote: number;
+  readonly behindRemote: number;
+}
+
+export interface AgentRunStatus {
+  /** "test", "build", "lint", "typecheck", or arbitrary command label. */
+  readonly command: string;
+  readonly success: boolean;
+  /** Short human-readable summary ("142/142 passed", "build failed at types.ts"). */
+  readonly summary: string;
+  readonly durationMs: number;
+}
+
+// ---------------------------------------------------------------------------
 // Hive Mind State
 // ---------------------------------------------------------------------------
 
@@ -330,6 +368,14 @@ export type ServerMessage =
   | { readonly type: 'conflict_detected'; readonly conflict: Conflict }
   | { readonly type: 'conflict_resolved'; readonly conflictId: ConflictId }
   | { readonly type: 'status_update'; readonly status: HiveMindStatus }
+  | { readonly type: 'message_received'; readonly message: AgentMessage }
+  | {
+      readonly type: 'agent_status_update';
+      readonly agentId: AgentId;
+      readonly key: string;
+      readonly value: string;
+      readonly updatedAt: ISOTimestamp;
+    }
   | { readonly type: 'error'; readonly message: string };
 
 /**

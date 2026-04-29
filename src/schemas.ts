@@ -234,6 +234,23 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('conflict_detected'), conflict: conflictSchema }),
   z.object({ type: z.literal('conflict_resolved'), conflictId: nonEmptyString }),
   z.object({ type: z.literal('status_update'), status: hiveMindStatusSchema }),
+  z.object({
+    type: z.literal('message_received'),
+    message: z.object({
+      id: nonEmptyString,
+      fromAgentId: nonEmptyString,
+      toAgentId: nonEmptyString.nullable(),
+      content: nonEmptyString,
+      createdAt: isoTimestampSchema,
+    }),
+  }),
+  z.object({
+    type: z.literal('agent_status_update'),
+    agentId: nonEmptyString,
+    key: nonEmptyString,
+    value: z.string(),
+    updatedAt: isoTimestampSchema,
+  }),
   z.object({ type: z.literal('error'), message: nonEmptyString }),
 ]);
 
@@ -308,6 +325,27 @@ export const logDecisionBodySchema = z.object({
   category: decisionCategorySchema,
   summary: z.string().trim().min(1).max(LENGTH_LIMITS.summary),
   rationale: z.string().trim().min(1).max(LENGTH_LIMITS.longText),
+});
+
+export const sendMessageBodySchema = z.object({
+  /** Recipient agent ID, or null for broadcast. */
+  toAgentId: shortString.nullable(),
+  content: z.string().trim().min(1).max(LENGTH_LIMITS.longText),
+});
+
+export const gitStatusBodySchema = z.object({
+  branch: shortString.nullable(),
+  head: shortString.nullable(),
+  dirtyFiles: z.number().int().nonnegative(),
+  aheadOfRemote: z.number().int().nonnegative(),
+  behindRemote: z.number().int().nonnegative(),
+});
+
+export const runStatusBodySchema = z.object({
+  command: shortString,
+  success: z.boolean(),
+  summary: z.string().trim().max(LENGTH_LIMITS.summary),
+  durationMs: z.number().int().nonnegative(),
 });
 
 // ---------------------------------------------------------------------------

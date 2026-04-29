@@ -40,6 +40,7 @@ import {
   taskId,
   conflictId,
   decisionId,
+  isoTimestamp,
   agentStatusSchema,
   agentToolSchema,
   ownershipModeSchema,
@@ -353,6 +354,28 @@ const SCHEMA = `
     revoked       INTEGER NOT NULL DEFAULT 0
   );
 
+  CREATE TABLE IF NOT EXISTS messages (
+    id              TEXT PRIMARY KEY,
+    from_agent_id   TEXT NOT NULL,
+    to_agent_id     TEXT,                  -- NULL = broadcast
+    content         TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY (from_agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_agent_id)   REFERENCES agents(id) ON DELETE CASCADE
+  );
+
+  -- Per-agent free-form status metadata (git status, last test run, etc.)
+  -- Keyed by (agent_id, key) for flexibility without bloating the agents
+  -- table. Values are JSON strings; readers decode as needed.
+  CREATE TABLE IF NOT EXISTS agent_metadata (
+    agent_id    TEXT NOT NULL,
+    key         TEXT NOT NULL,
+    value       TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (agent_id, key),
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
   CREATE INDEX IF NOT EXISTS idx_agents_token ON agents(agent_token);
   CREATE INDEX IF NOT EXISTS idx_file_ownership_agent ON file_ownership(agent_id);
@@ -364,6 +387,9 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_conflicts_resolved ON conflicts(resolved);
   CREATE INDEX IF NOT EXISTS idx_invites_expires ON invites(expires_at);
   CREATE INDEX IF NOT EXISTS idx_join_tokens_hash ON join_tokens(token_hash);
+  CREATE INDEX IF NOT EXISTS idx_messages_to ON messages(to_agent_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_from ON messages(from_agent_id);
+  CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at);
 `;
 
 /**
@@ -1039,6 +1065,88 @@ export class Store {
   }
 
   // -------------------------------------------------------------------------
+  // Messages (DMs + broadcasts)
+  // -------------------------------------------------------------------------
+
+  insertMessage(msg: MessageRow): void {
+    this.db
+      .prepare(
+        `INSERT INTO messages (id, from_agent_id, to_agent_id, content, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(msg.id, msg.from_agent_id, msg.to_agent_id, msg.content, msg.created_at);
+  }
+
+  /**
+   * Messages visible to an agent: broadcasts (to_agent_id IS NULL),
+   * DMs to them, and DMs they sent. Optionally filter by `since` timestamp.
+   */
+  getMessagesForAgent(
+    agentIdVal: AgentId,
+    since: string | null,
+    limit: number,
+  ): readonly MessageRow[] {
+    const sinceClause = since ? 'AND created_at > ?' : '';
+    const params: unknown[] = [agentIdVal, agentIdVal];
+    if (since) params.push(since);
+    params.push(limit);
+    return this.db
+      .prepare(
+        `SELECT * FROM messages
+         WHERE (to_agent_id IS NULL OR to_agent_id = ? OR from_agent_id = ?)
+         ${sinceClause}
+         ORDER BY created_at DESC
+         LIMIT ?`,
+      )
+      .all(...params) as MessageRow[];
+  }
+
+  /** Admin view: all messages, paginated. */
+  getAllMessages(since: string | null, limit: number): readonly MessageRow[] {
+    if (since) {
+      return this.db
+        .prepare('SELECT * FROM messages WHERE created_at > ? ORDER BY created_at DESC LIMIT ?')
+        .all(since, limit) as MessageRow[];
+    }
+    return this.db
+      .prepare('SELECT * FROM messages ORDER BY created_at DESC LIMIT ?')
+      .all(limit) as MessageRow[];
+  }
+
+  getMessageById(id: string): MessageRow | undefined {
+    return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as MessageRow | undefined;
+  }
+
+  deleteMessage(id: string): boolean {
+    return this.db.prepare('DELETE FROM messages WHERE id = ?').run(id).changes > 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent metadata (git status, last run, etc.)
+  // -------------------------------------------------------------------------
+
+  upsertAgentMetadata(agentIdVal: AgentId, key: string, value: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO agent_metadata (agent_id, key, value, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(agent_id, key) DO UPDATE SET value = ?, updated_at = ?`,
+      )
+      .run(agentIdVal, key, value, isoTimestamp(), value, isoTimestamp());
+  }
+
+  getAgentMetadata(agentIdVal: AgentId): Record<string, { value: string; updatedAt: string }> {
+    const rows = this.db
+      .prepare('SELECT key, value, updated_at FROM agent_metadata WHERE agent_id = ?')
+      .all(agentIdVal) as { key: string; value: string; updated_at: string }[];
+    const out: Record<string, { value: string; updatedAt: string }> = {};
+    for (const r of rows) {
+      out[r.key] = { value: r.value, updatedAt: r.updated_at };
+    }
+    return out;
+  }
+
+  // -------------------------------------------------------------------------
   // Transactions
   // -------------------------------------------------------------------------
 
@@ -1075,4 +1183,12 @@ export interface JoinTokenRow {
   last_used_at: string | null;
   agent_count: number;
   revoked: number;
+}
+
+export interface MessageRow {
+  id: string;
+  from_agent_id: string;
+  to_agent_id: string | null;
+  content: string;
+  created_at: string;
 }
