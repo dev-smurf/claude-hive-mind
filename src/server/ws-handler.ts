@@ -138,18 +138,24 @@ export class WsHandler {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const agentIdParam = url.searchParams.get('agentId');
 
-    // Auth via Authorization header in upgrade request (not URL params).
-    // Accepts admin token or per-agent token. When using a per-agent token,
-    // the URL `agentId` query param must match the authenticated agent.
+    // Auth via Authorization header in upgrade request OR ?token= query
+    // param (browsers can't set custom WS headers, so the dashboard uses
+    // the query form). Accepts admin or per-agent token. When using a
+    // per-agent token, the `agentId` query param must match.
     let resolvedAgentId: string | null = agentIdParam;
     let isAdmin = !this.config.authEnabled; // open access defaults to admin
     if (this.config.authEnabled) {
       const authHeader = req.headers.authorization;
-      if (!authHeader?.startsWith('Bearer ')) {
-        ws.close(4001, 'Missing Authorization header');
+      const queryToken = url.searchParams.get('token');
+      let token: string;
+      if (authHeader?.startsWith('Bearer ')) {
+        token = authHeader.slice(7);
+      } else if (queryToken && queryToken.length > 0) {
+        token = queryToken;
+      } else {
+        ws.close(4001, 'Missing Authorization header or ?token= query');
         return;
       }
-      const token = authHeader.slice(7);
       isAdmin = safeCompare(token, this.config.authToken);
 
       if (!isAdmin) {

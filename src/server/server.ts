@@ -9,6 +9,9 @@ import express from 'express';
 import cors from 'cors';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Config } from '../config.js';
 import { Store } from '../services/store.js';
 import { EventBus } from '../services/event-bus.js';
@@ -160,6 +163,30 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     bus,
   });
   app.use(routes);
+
+  // Static dashboard served at the root path. Built by `npm run build` to
+  // apps/dashboard/dist. If the build hasn't been run, the path won't
+  // exist and the dashboard simply isn't served — the API still works.
+  if (config.dashboardEnabled) {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      // When running from dist/server/server.js → dist is sibling of apps/
+      resolvePath(here, '../../apps/dashboard/dist'),
+      // When running from src/server/server.ts via tsx
+      resolvePath(here, '../../apps/dashboard/dist'),
+      // When installed as a global npm package
+      resolvePath(here, '../../../apps/dashboard/dist'),
+    ];
+    const dashboardDir = candidates.find((p) => existsSync(join(p, 'index.html')));
+    if (dashboardDir) {
+      app.use(express.static(dashboardDir));
+      // SPA fallback — any unmatched non-API path returns the dashboard's
+      // index.html so client-side routing works on refresh.
+      app.get(/^(?!\/api\/|\/health|\/ws).*/, (_req, res) => {
+        res.sendFile(join(dashboardDir, 'index.html'));
+      });
+    }
+  }
 
   // JSON 404 for any path that didn't match a route. Without this, Express
   // falls back to its default HTML 404 page which leaks server internals

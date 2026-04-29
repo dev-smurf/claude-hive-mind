@@ -8,12 +8,16 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "workspaces": [
+    "apps/dashboard"
+  ],
   "bin": {
     "claude-hive-mind": "dist/cli.js",
     "chm": "dist/cli.js"
   },
   "files": [
     "dist",
+    "apps/dashboard/dist",
     "README.md",
     "LICENSE"
   ],
@@ -21,8 +25,11 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && npm run build --workspace=apps/dashboard",
+    "build:server": "tsc",
+    "build:dashboard": "npm run build --workspace=apps/dashboard",
     "dev": "tsx watch src/index.ts",
+    "dev:dashboard": "npm run dev --workspace=apps/dashboard",
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -32,7 +39,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"{src,tests}/**/*.ts\"",
     "format:check": "prettier --check \"{src,tests}/**/*.ts\"",
-    "clean": "rm -rf dist coverage",
+    "clean": "rm -rf dist coverage apps/dashboard/dist",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
