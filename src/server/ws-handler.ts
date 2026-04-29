@@ -13,7 +13,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'node:http';
 import type { EventBus } from '../services/event-bus.js';
 import type { Config } from '../config.js';
-import type { ServerMessage } from '../types.js';
+import type { AgentRecord, ServerMessage } from '../types.js';
 import type { AgentRegistry } from '../services/agent-registry.js';
 import { logger } from '../util/logger.js';
 import { safeCompare } from './middleware.js';
@@ -24,7 +24,42 @@ const WS_BUFFER_HIGH_WATER = 256 * 1024;
 export interface WsClient {
   readonly ws: WebSocket;
   readonly agentId: string | null;
+  /** True iff the client authenticated with the admin token. */
+  readonly isAdmin: boolean;
   readonly connectedAt: Date;
+}
+
+/** Strip workspace_path and repo_url from an agent record. */
+function stripSensitiveAgentFields(agent: AgentRecord): AgentRecord {
+  return { ...agent, workspacePath: '', repoUrl: null };
+}
+
+/**
+ * Return a per-client variant of a broadcast message: events that carry an
+ * AgentRecord get its workspacePath/repoUrl stripped when the recipient is
+ * not the admin and not the agent itself.
+ */
+function messageForClient(message: ServerMessage, client: WsClient): ServerMessage {
+  if (client.isAdmin) return message;
+
+  if (message.type === 'agent_joined') {
+    if (client.agentId === message.agent.id) return message;
+    return { type: 'agent_joined', agent: stripSensitiveAgentFields(message.agent) };
+  }
+
+  if (message.type === 'state_sync') {
+    return {
+      type: 'state_sync',
+      state: {
+        ...message.state,
+        agents: message.state.agents.map((a) =>
+          a.id === client.agentId ? a : stripSensitiveAgentFields(a),
+        ),
+      },
+    };
+  }
+
+  return message;
 }
 
 export class WsHandler {
@@ -107,6 +142,7 @@ export class WsHandler {
     // Accepts admin token or per-agent token. When using a per-agent token,
     // the URL `agentId` query param must match the authenticated agent.
     let resolvedAgentId: string | null = agentIdParam;
+    let isAdmin = !this.config.authEnabled; // open access defaults to admin
     if (this.config.authEnabled) {
       const authHeader = req.headers.authorization;
       if (!authHeader?.startsWith('Bearer ')) {
@@ -114,7 +150,7 @@ export class WsHandler {
         return;
       }
       const token = authHeader.slice(7);
-      const isAdmin = safeCompare(token, this.config.authToken);
+      isAdmin = safeCompare(token, this.config.authToken);
 
       if (!isAdmin) {
         const agent = this.registry.getAgentByToken(token);
@@ -133,6 +169,7 @@ export class WsHandler {
     const client: WsClient = {
       ws,
       agentId: resolvedAgentId,
+      isAdmin,
       connectedAt: new Date(),
     };
 
@@ -152,11 +189,14 @@ export class WsHandler {
 
   /**
    * Broadcast a message to all connected WebSocket clients.
-   * Skips clients whose send buffer exceeds the high-water mark
-   * to prevent unbounded memory growth from slow consumers.
+   *
+   * Each client receives a per-recipient variant: agent_joined and
+   * state_sync events get their workspace/repo fields stripped before
+   * being sent to non-admin clients. The shared admin payload is cached
+   * to avoid serializing it once per admin.
    */
   private broadcast(message: ServerMessage): void {
-    const data = JSON.stringify(message);
+    let adminData: string | null = null;
 
     for (const client of this.clients) {
       if (client.ws.readyState !== WebSocket.OPEN) continue;
@@ -167,6 +207,14 @@ export class WsHandler {
           bufferedAmount: client.ws.bufferedAmount,
         });
         continue;
+      }
+
+      let data: string;
+      if (client.isAdmin) {
+        adminData ??= JSON.stringify(message);
+        data = adminData;
+      } else {
+        data = JSON.stringify(messageForClient(message, client));
       }
 
       client.ws.send(data, (err) => {

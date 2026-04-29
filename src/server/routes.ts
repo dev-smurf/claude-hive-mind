@@ -10,7 +10,7 @@
  */
 
 import { Router } from 'express';
-import type { Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { z } from 'zod';
 import type { AgentRegistry } from '../services/agent-registry.js';
 import type { FileOwnershipService } from '../services/file-ownership.js';
@@ -87,19 +87,21 @@ function parseBody<T>(req: Request, res: Response, schema: z.ZodType<T>): T | nu
 
 /**
  * Wrap a route handler (sync or async) so InvalidPathError becomes 400
- * instead of 500. Other thrown errors propagate to the global error handler.
+ * instead of 500. All other errors are forwarded to Express's `next` so
+ * the global `errorHandler` runs (and the client never hangs on an
+ * unhandled async rejection).
  */
 function safe(handler: (req: Request, res: Response) => void | Promise<void>) {
-  return (req: Request, res: Response): void => {
+  return (req: Request, res: Response, next: NextFunction): void => {
     try {
       const r = handler(req, res);
       if (r && typeof r === 'object' && 'catch' in r) {
-        void r.catch((err: unknown) => {
+        r.catch((err: unknown) => {
           if (err instanceof InvalidPathError) {
             res.status(400).json({ error: err.message });
             return;
           }
-          throw err;
+          next(err);
         });
       }
     } catch (err) {
@@ -107,7 +109,7 @@ function safe(handler: (req: Request, res: Response) => void | Promise<void>) {
         res.status(400).json({ error: err.message });
         return;
       }
-      throw err;
+      next(err);
     }
   };
 }
@@ -132,6 +134,8 @@ function sanitizeAgent(req: Request, agent: AgentRecord): AgentRecord | PublicAg
 // ---------------------------------------------------------------------------
 
 const STATE_CACHE_TTL_MS = 1_000;
+/** Max distinct auth contexts to remember in the state cache. Bounds memory. */
+const STATE_CACHE_MAX_ENTRIES = 256;
 
 interface StateCache {
   generatedAt: number;
@@ -565,7 +569,11 @@ export function createRoutes(services: RouteServices): Router {
     // Cache is per-context: admin gets full data, agents get sanitized data.
     // The cache is keyed by 'admin' or the authenticated agent ID.
     const auth = req.auth;
-    const cacheKey: string = isAdmin(req) ? 'admin' : (auth?.authenticatedAgentId ?? 'anonymous');
+    // Prefixed key namespace prevents an agent UUID equal to "admin" from
+    // colliding with the admin bucket.
+    const cacheKey: string = isAdmin(req)
+      ? 'admin:'
+      : `agent:${auth?.authenticatedAgentId ?? 'anonymous'}`;
     const now = Date.now();
     const cached = stateCache.get(cacheKey);
     if (cached && now - cached.generatedAt < STATE_CACHE_TTL_MS) {
@@ -581,6 +589,12 @@ export function createRoutes(services: RouteServices): Router {
       decisions: decisions.getAll(),
       conflicts: conflicts.getAll(),
     });
+
+    // Bound the cache: drop the oldest entry once we hit the cap.
+    if (stateCache.size >= STATE_CACHE_MAX_ENTRIES) {
+      const oldest = stateCache.keys().next().value;
+      if (oldest !== undefined) stateCache.delete(oldest);
+    }
     stateCache.set(cacheKey, { generatedAt: now, body });
     res.type('application/json').send(body);
   });

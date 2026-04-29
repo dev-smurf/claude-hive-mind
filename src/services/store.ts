@@ -152,7 +152,10 @@ function parseEnum<T extends string>(
 function parseJsonArray(raw: string, table: string, rowId: string): string[] {
   try {
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as string[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    // Filter — array could legitimately parse but contain non-strings if a row
+    // was corrupted by direct SQL or a future schema change.
+    return parsed.filter((e): e is string => typeof e === 'string');
   } catch {
     logger.error('store', 'Corrupt JSON column — substituting empty array', {
       table,
@@ -463,34 +466,42 @@ export class Store {
     if (!token) return undefined;
     const row = this.db
       .prepare(
-        `SELECT id, display_name, tool, status, current_task_id, last_heartbeat,
-                connected_at, workspace_path, current_branch, repo_url, '' as agent_token
-         FROM agents
-         WHERE agent_token = ? AND agent_token != ''`,
+        `SELECT ${Store.AGENT_COLUMNS} FROM agents WHERE agent_token = ? AND agent_token != ''`,
       )
       .get(token) as AgentRow | undefined;
     return row ? rowToAgent(row) : undefined;
   }
+
+  /**
+   * Defense-in-depth: every agent SELECT lists explicit columns and projects
+   * agent_token to '' so the secret never rides in the in-memory row.
+   */
+  private static readonly AGENT_COLUMNS = `id, display_name, tool, status, current_task_id, last_heartbeat,
+       connected_at, workspace_path, current_branch, repo_url, '' as agent_token`;
 
   /** Get agents whose status is in the given set. Indexed query. */
   getAgentsByStatus(...statuses: readonly AgentStatus[]): readonly AgentRecord[] {
     if (statuses.length === 0) return [];
     const placeholders = statuses.map(() => '?').join(',');
     const rows = this.db
-      .prepare(`SELECT * FROM agents WHERE status IN (${placeholders}) ORDER BY connected_at`)
+      .prepare(
+        `SELECT ${Store.AGENT_COLUMNS} FROM agents WHERE status IN (${placeholders}) ORDER BY connected_at`,
+      )
       .all(...statuses) as AgentRow[];
     return rows.map(rowToAgent);
   }
 
   getAgent(id: AgentId): AgentRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM agents WHERE id = ?').get(id) as
-      | AgentRow
-      | undefined;
+    const row = this.db
+      .prepare(`SELECT ${Store.AGENT_COLUMNS} FROM agents WHERE id = ?`)
+      .get(id) as AgentRow | undefined;
     return row ? rowToAgent(row) : undefined;
   }
 
   getAllAgents(): readonly AgentRecord[] {
-    const rows = this.db.prepare('SELECT * FROM agents ORDER BY connected_at').all() as AgentRow[];
+    const rows = this.db
+      .prepare(`SELECT ${Store.AGENT_COLUMNS} FROM agents ORDER BY connected_at`)
+      .all() as AgentRow[];
     return rows.map(rowToAgent);
   }
 
@@ -516,7 +527,7 @@ export class Store {
 
   getStaleAgents(cutoff: ISOTimestamp): readonly AgentRecord[] {
     const rows = this.db
-      .prepare('SELECT * FROM agents WHERE last_heartbeat < ? AND status != ?')
+      .prepare(`SELECT ${Store.AGENT_COLUMNS} FROM agents WHERE last_heartbeat < ? AND status != ?`)
       .all(cutoff, 'disconnected') as AgentRow[];
     return rows.map(rowToAgent);
   }

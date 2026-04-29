@@ -24,6 +24,7 @@ import type { Config } from '../config.js';
 import type { Store } from './store.js';
 import type { EventBus } from './event-bus.js';
 import type { TaskQueue } from './task-queue.js';
+import { logger } from '../util/logger.js';
 
 export interface RegisterInput {
   readonly displayName: string;
@@ -217,13 +218,29 @@ export class AgentRegistry {
    * and eventually gets cleaned up here.
    */
   cleanupStale(): readonly AgentId[] {
-    const cutoff = isoTimestamp(new Date(Date.now() - this.config.heartbeatTimeoutMs));
-    const stale = this.store.getStaleAgents(cutoff);
-    const cleaned: AgentId[] = [];
+    let stale: readonly AgentRecord[];
+    try {
+      const cutoff = isoTimestamp(new Date(Date.now() - this.config.heartbeatTimeoutMs));
+      stale = this.store.getStaleAgents(cutoff);
+    } catch (err: unknown) {
+      logger.error('agent-registry', 'getStaleAgents failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
 
+    const cleaned: AgentId[] = [];
     for (const agent of stale) {
-      this.disconnect(agent.id);
-      cleaned.push(agent.id);
+      try {
+        this.disconnect(agent.id);
+        cleaned.push(agent.id);
+      } catch (err: unknown) {
+        // One bad row must not break the whole sweep.
+        logger.warn('agent-registry', 'disconnect failed during stale cleanup', {
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
 
     return cleaned;
@@ -237,7 +254,15 @@ export class AgentRegistry {
     if (this.cleanupTimer) return; // already running
 
     this.cleanupTimer = setInterval(() => {
-      this.cleanupStale();
+      try {
+        this.cleanupStale();
+      } catch (err: unknown) {
+        // Defensive — cleanupStale already swallows row errors, but keep the
+        // timer alive even if something unexpected escapes.
+        logger.error('agent-registry', 'cleanupStale interval crashed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }, this.config.staleAgentCleanupMs);
 
     // Don't block Node.js from exiting

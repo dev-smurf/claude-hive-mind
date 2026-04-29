@@ -114,6 +114,9 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   const httpServer = createServer(app);
   const wsHandler = new WsHandler(httpServer, bus, config, registry);
 
+  // Background timers (stopped in stop()).
+  const cleanupTimers: NodeJS.Timeout[] = [];
+
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
@@ -129,6 +132,32 @@ export function createHiveMindServer(config: Config): HiveMindServer {
       return new Promise((resolve, reject) => {
         // Start cleanup intervals
         registry.startCleanupInterval();
+
+        // Periodically expire claimed files past their TTL.
+        cleanupTimers.push(
+          setInterval(() => {
+            try {
+              fileOwnership.cleanupExpired();
+            } catch (err: unknown) {
+              logger.error('cleanup', 'fileOwnership.cleanupExpired failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }, config.staleAgentCleanupMs).unref(),
+        );
+
+        // Periodically expire knowledge entries past their TTL.
+        cleanupTimers.push(
+          setInterval(() => {
+            try {
+              knowledge.cleanupExpired();
+            } catch (err: unknown) {
+              logger.error('cleanup', 'knowledge.cleanupExpired failed', {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }, config.staleAgentCleanupMs).unref(),
+        );
 
         // Start WS broadcasting
         wsHandler.start();
@@ -150,6 +179,8 @@ export function createHiveMindServer(config: Config): HiveMindServer {
     stop(): Promise<void> {
       return new Promise((resolve) => {
         registry.stopCleanupInterval();
+        for (const t of cleanupTimers) clearInterval(t);
+        cleanupTimers.length = 0;
         wsHandler.stop();
         bus.clear();
         httpServer.close(() => {

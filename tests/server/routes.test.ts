@@ -1321,6 +1321,152 @@ describe('HTTP API', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Per-context state cache (admin vs agent)
+  // -----------------------------------------------------------------------
+
+  describe('Per-context state cache', () => {
+    let authedServer: HiveMindServer;
+    let authedBase: string;
+
+    beforeEach(async () => {
+      authedServer = createHiveMindServer(
+        testConfig({ authEnabled: true, authToken: 'admin-secret' }),
+      );
+      await authedServer.start();
+      authedBase = baseUrl(authedServer);
+    });
+
+    afterEach(async () => {
+      await authedServer.stop();
+    });
+
+    it('admin sees workspacePath; agent does not', async () => {
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'X', tool: 'claude-code', workspacePath: '/secret/path' },
+        'admin-secret',
+      );
+      const a = (await reg.json()) as { id: string; agentToken: string };
+
+      const adminBody = (await (await get(`${authedBase}/api/state`, 'admin-secret')).json()) as {
+        agents: { id: string; workspacePath?: string }[];
+      };
+      const agentBody = (await (await get(`${authedBase}/api/state`, a.agentToken)).json()) as {
+        agents: { id: string; workspacePath?: string }[];
+      };
+
+      const adminView = adminBody.agents.find((g) => g.id === a.id);
+      const agentView = agentBody.agents.find((g) => g.id === a.id);
+      expect(adminView?.workspacePath).toBe('/secret/path');
+      // The agent token sees its OWN record fully — pick a different agent.
+      const reg2 = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'Y', tool: 'claude-code', workspacePath: '/other/path' },
+        'admin-secret',
+      );
+      const b = (await reg2.json()) as { id: string };
+      const agentBody2 = (await (await get(`${authedBase}/api/state`, a.agentToken)).json()) as {
+        agents: { id: string; workspacePath?: string }[];
+      };
+      const otherView = agentBody2.agents.find((g) => g.id === b.id);
+      // REST sanitizer omits the field entirely (JSON has no key).
+      expect(otherView?.workspacePath).toBeUndefined();
+      expect(agentView?.id).toBe(a.id); // own record present
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Conflict resolve ownership
+  // -----------------------------------------------------------------------
+
+  describe('Conflict resolve auth', () => {
+    let authedServer: HiveMindServer;
+    let authedBase: string;
+
+    beforeEach(async () => {
+      authedServer = createHiveMindServer(
+        testConfig({ authEnabled: true, authToken: 'admin-secret' }),
+      );
+      await authedServer.start();
+      authedBase = baseUrl(authedServer);
+    });
+
+    afterEach(async () => {
+      await authedServer.stop();
+    });
+
+    it('rejects third-party agent with 403', async () => {
+      // Create agents A, B, C
+      const ra = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'A', tool: 'claude-code', workspacePath: '/a' },
+        'admin-secret',
+      );
+      const a = (await ra.json()) as { id: string; agentToken: string };
+      const rb = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'B', tool: 'claude-code', workspacePath: '/b' },
+        'admin-secret',
+      );
+      const b = (await rb.json()) as { id: string; agentToken: string };
+      const rc = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'C', tool: 'claude-code', workspacePath: '/c' },
+        'admin-secret',
+      );
+      const c = (await rc.json()) as { id: string; agentToken: string };
+
+      // A and B fight over a file → conflict between them.
+      await post(
+        `${authedBase}/api/files/claim`,
+        { filePath: 'fight.ts', agentId: a.id, mode: 'exclusive' },
+        a.agentToken,
+      );
+      await post(
+        `${authedBase}/api/files/claim`,
+        { filePath: 'fight.ts', agentId: b.id, mode: 'exclusive' },
+        b.agentToken,
+      );
+
+      const list = (await (
+        await get(`${authedBase}/api/conflicts?unresolved=true`, 'admin-secret')
+      ).json()) as { id: string }[];
+      const cid = list[0]?.id;
+      expect(cid).toBeTruthy();
+
+      if (!cid) throw new Error('No conflict found');
+      // C (third party) tries to resolve → 403
+      const res = await post(`${authedBase}/api/conflicts/${cid}/resolve`, {}, c.agentToken);
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Length caps — boundaries
+  // -----------------------------------------------------------------------
+
+  describe('Length cap boundaries', () => {
+    it('accepts displayName of exactly 200 chars', async () => {
+      const res = await post(`${base}/api/agents/register`, {
+        displayName: 'A'.repeat(200),
+        tool: 'claude-code',
+        workspacePath: '/x',
+      });
+      expect(res.status).toBe(201);
+    });
+
+    it('accepts knowledge value of exactly 100_000 chars', async () => {
+      const a = await registerAgent(base);
+      const res = await post(`${base}/api/knowledge`, {
+        key: 'big',
+        value: 'x'.repeat(100_000),
+        agentId: a.id,
+      });
+      expect(res.status).toBe(201);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Rate limiting
   // -----------------------------------------------------------------------
 
