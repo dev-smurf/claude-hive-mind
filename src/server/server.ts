@@ -115,6 +115,13 @@ export function createHiveMindServer(config: Config): HiveMindServer {
   });
   app.use(routes);
 
+  // JSON 404 for any path that didn't match a route. Without this, Express
+  // falls back to its default HTML 404 page which leaks server internals
+  // and breaks API clients that always parse JSON.
+  app.use((req, res) => {
+    res.status(404).json({ error: 'Route not found', path: req.path });
+  });
+
   // Error handler (must be last)
   app.use(errorHandler);
 

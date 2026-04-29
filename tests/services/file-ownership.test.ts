@@ -330,6 +330,27 @@ describe('conflicts', () => {
 
     expect(r1.conflict?.id).not.toBe(r2.conflict?.id);
   });
+
+  it('auto-resolves a conflict when both contending parties release', () => {
+    service.claim({ filePath: 'src/contested.ts', agentId: GABRIEL, mode: 'exclusive' });
+    const r = service.claim({
+      filePath: 'src/contested.ts',
+      agentId: ALICE,
+      mode: 'exclusive',
+    });
+    expect(r.granted).toBe(false);
+    const conflictId = r.conflict?.id;
+    expect(conflictId).toBeTruthy();
+
+    // Open conflict exists
+    const open1 = store.getUnresolvedConflicts();
+    expect(open1.some((c) => c.id === conflictId)).toBe(true);
+
+    // Gabriel releases — Alice never claimed, so the conflict should resolve
+    service.release('src/contested.ts', GABRIEL);
+    const open2 = store.getUnresolvedConflicts();
+    expect(open2.some((c) => c.id === conflictId)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -374,17 +395,41 @@ describe('claim limits', () => {
 // Releasing files
 // ---------------------------------------------------------------------------
 
+describe('shared mode (multiple agents on same file)', () => {
+  it('two agents can both hold a shared claim on the same file', () => {
+    const r1 = service.claim({ filePath: 'src/x.ts', agentId: GABRIEL, mode: 'shared' });
+    const r2 = service.claim({ filePath: 'src/x.ts', agentId: ALICE, mode: 'shared' });
+    expect(r1.granted).toBe(true);
+    expect(r2.granted).toBe(true);
+    const all = service.getOwnershipsByPath('src/x.ts');
+    expect(all).toHaveLength(2);
+    const owners = new Set(all.map((c) => c.agentId));
+    expect(owners.has(GABRIEL)).toBe(true);
+    expect(owners.has(ALICE)).toBe(true);
+  });
+
+  it("releasing one agent's shared claim does not remove the other's", () => {
+    service.claim({ filePath: 'src/x.ts', agentId: GABRIEL, mode: 'shared' });
+    service.claim({ filePath: 'src/x.ts', agentId: ALICE, mode: 'shared' });
+    const r = service.release('src/x.ts', GABRIEL);
+    expect(r.released).toBe(true);
+    const remaining = service.getOwnershipsByPath('src/x.ts');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.agentId).toBe(ALICE);
+  });
+});
+
 describe('release', () => {
   it('releases a claimed file', () => {
     service.claim({ filePath: 'src/app.ts', agentId: GABRIEL, mode: 'exclusive' });
 
-    const released = service.release('src/app.ts', GABRIEL);
+    const result = service.release('src/app.ts', GABRIEL);
 
-    expect(released).toBe(true);
+    expect(result.released).toBe(true);
     expect(store.getFileOwnership('src/app.ts')).toBeUndefined();
   });
 
-  it('emits file_released event', () => {
+  it('emits file_released event with reason "manual"', () => {
     service.claim({ filePath: 'src/app.ts', agentId: GABRIEL, mode: 'exclusive' });
     emitted.length = 0;
 
@@ -392,15 +437,22 @@ describe('release', () => {
 
     const releaseEvents = emitted.filter((e) => e.type === 'file_released');
     expect(releaseEvents).toHaveLength(1);
+    if (releaseEvents[0]?.type === 'file_released') {
+      expect(releaseEvents[0].reason).toBe('manual');
+    }
   });
 
-  it('returns false for unclaimed file', () => {
-    expect(service.release('nope.ts', GABRIEL)).toBe(false);
+  it('returns no-claim-exists for unclaimed file', () => {
+    const result = service.release('nope.ts', GABRIEL);
+    expect(result.released).toBe(false);
+    expect(result.reason).toBe('no-claim-exists');
   });
 
-  it('returns false when another agent owns the file', () => {
+  it('returns held-by-other-agent when another agent owns the file', () => {
     service.claim({ filePath: 'src/app.ts', agentId: ALICE, mode: 'exclusive' });
-    expect(service.release('src/app.ts', GABRIEL)).toBe(false);
+    const result = service.release('src/app.ts', GABRIEL);
+    expect(result.released).toBe(false);
+    expect(result.reason).toBe('held-by-other-agent');
   });
 
   it('does not affect other files', () => {

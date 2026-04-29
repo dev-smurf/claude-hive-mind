@@ -66,6 +66,20 @@ export interface ClaimResult {
   readonly conflict: Conflict | null;
 }
 
+/** Possible outcomes of a release call. */
+export type ReleaseFailureReason =
+  /** No claim exists at all on this file/branch. */
+  | 'no-claim-exists'
+  /** Some claim exists but it is held by another agent (not the caller). */
+  | 'held-by-other-agent'
+  /** Caller previously had a claim that is now gone (expired/reaped). */
+  | 'no-matching-claim';
+
+export interface ReleaseResult {
+  readonly released: boolean;
+  readonly reason?: ReleaseFailureReason;
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -159,16 +173,62 @@ export class FileOwnershipService {
    * Release a file claim.
    * Returns true if the file was previously claimed, false otherwise.
    */
-  release(filePath: string, agentId: AgentId, branch?: string | null): boolean {
+  release(filePath: string, agentId: AgentId, branch?: string | null): ReleaseResult {
     const safeFilePath = normalizeFilePath(filePath);
     const branchVal = normalizeBranch(branch);
-    const existing = this.store.getFileOwnership(safeFilePath, branchVal);
-    if (existing?.agentId !== agentId) return false;
 
-    this.store.deleteFileOwnership(safeFilePath, branchVal);
-    this.bus.emit({ type: 'file_released', filePath: safeFilePath, agentId });
+    // Agent-scoped lookup so a shared claim by another agent cannot be
+    // mistakenly identified as our own.
+    const existing = this.store.getFileOwnershipByAgent(safeFilePath, branchVal, agentId);
+    if (!existing) {
+      // Distinguish the 4 failure modes for better operator UX:
+      const allClaims = this.store.getFileOwnershipsByPath(safeFilePath);
+      if (allClaims.length === 0) {
+        return { released: false, reason: 'no-claim-exists' };
+      }
+      const heldByOther = allClaims.find((c) => c.agentId !== agentId);
+      if (heldByOther) {
+        return { released: false, reason: 'held-by-other-agent' };
+      }
+      return { released: false, reason: 'no-matching-claim' };
+    }
 
-    return true;
+    const deleted = this.store.deleteFileOwnership(safeFilePath, branchVal, agentId);
+    if (!deleted) {
+      return { released: false, reason: 'no-matching-claim' };
+    }
+
+    this.bus.emit({
+      type: 'file_released',
+      filePath: safeFilePath,
+      agentId,
+      reason: 'manual',
+    });
+    this.autoResolveConflicts(safeFilePath);
+
+    return { released: true };
+  }
+
+  /**
+   * After a file is released, mark related file_contention conflicts resolved
+   * if neither agentA nor agentB still holds any claim on that file.
+   */
+  private autoResolveConflicts(filePath: string): void {
+    const remaining = this.store.getFileOwnershipsByPath(filePath);
+    const remainingAgents = new Set(remaining.map((c) => c.agentId));
+    const conflicts = this.store
+      .getUnresolvedConflicts()
+      .filter(
+        (c) =>
+          c.type === 'file_contention' &&
+          c.filePaths.includes(filePath) &&
+          !remainingAgents.has(c.agentA) &&
+          !remainingAgents.has(c.agentB),
+      );
+    for (const c of conflicts) {
+      this.store.resolveConflict(c.id);
+      this.bus.emit({ type: 'conflict_resolved', conflictId: c.id });
+    }
   }
 
   /**
@@ -180,7 +240,12 @@ export class FileOwnershipService {
     if (files.length === 0) return 0;
 
     for (const file of files) {
-      this.bus.emit({ type: 'file_released', filePath: file.filePath, agentId });
+      this.bus.emit({
+        type: 'file_released',
+        filePath: file.filePath,
+        agentId,
+        reason: 'manual',
+      });
     }
     this.store.deleteFilesByAgent(agentId);
 
@@ -248,12 +313,14 @@ export class FileOwnershipService {
     const expired = this.store.getExpiredFiles(now);
 
     for (const file of expired) {
-      this.store.deleteFileOwnership(file.filePath, file.branch);
+      this.store.deleteFileOwnership(file.filePath, file.branch, file.agentId);
       this.bus.emit({
         type: 'file_released',
         filePath: file.filePath,
         agentId: file.agentId,
+        reason: 'expired',
       });
+      this.autoResolveConflicts(file.filePath);
     }
 
     return expired.length;

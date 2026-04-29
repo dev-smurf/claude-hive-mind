@@ -26,6 +26,104 @@ import type { Store } from './store.js';
 import type { EventBus } from './event-bus.js';
 
 // ---------------------------------------------------------------------------
+// Contradiction-detection tuning
+// ---------------------------------------------------------------------------
+
+/** Minimum Jaccard similarity between two summaries to flag as contradiction. */
+const MIN_OVERLAP = 0.15;
+
+/**
+ * Categories where same-category cross-agent decisions are almost always
+ * real contradictions (technical choices). Other categories — `convention`,
+ * `other` — apply the keyword-overlap heuristic to avoid flagging unrelated
+ * process decisions.
+ */
+const TECHNICAL_CHOICE_CATEGORIES = new Set<string>([
+  'architecture',
+  'api-design',
+  'database',
+  'dependency',
+  'security',
+  'performance',
+]);
+
+const STOPWORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'by',
+  'for',
+  'from',
+  'had',
+  'has',
+  'have',
+  'in',
+  'is',
+  'it',
+  'its',
+  'of',
+  'on',
+  'or',
+  'the',
+  'this',
+  'that',
+  'to',
+  'was',
+  'will',
+  'with',
+  'when',
+  'we',
+  'you',
+  'your',
+  'they',
+  'them',
+  'their',
+  'should',
+  'would',
+  'could',
+  'just',
+  'use',
+  'using',
+  'used',
+  'all',
+  'any',
+  'every',
+  'some',
+  'into',
+  'than',
+  'then',
+  'over',
+  'under',
+  'about',
+  'because',
+  'before',
+  'after',
+  'while',
+  'where',
+  'which',
+  'these',
+  'those',
+  'must',
+  'need',
+  'each',
+]);
+
+function contentTokens(text: string): Set<string> {
+  const out = new Set<string>();
+  for (const tok of text.split(/[^a-z0-9]+/)) {
+    if (tok.length < 4) continue;
+    if (STOPWORDS.has(tok)) continue;
+    if (/^\d+$/.test(tok)) continue;
+    out.add(tok);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
 
@@ -70,11 +168,15 @@ export class DecisionLog {
       timestamp: isoTimestamp(),
     };
 
-    // Check for potential contradiction
+    // Check for potential contradiction. We only flag pairs that:
+    //  1. Are in the same category by a different agent
+    //  2. Share enough topical overlap that they're plausibly about the same
+    //     thing (Jaccard >= MIN_OVERLAP on content tokens)
+    //  3. Are NOT explicit supersede markers (we treat those as agreements)
     const existing = this.store.getDecisionsByCategory(input.category);
     const latestByOther = this.findLatestByOtherAgent(existing, input.agentId);
 
-    if (latestByOther) {
+    if (latestByOther && this.isLikelyContradiction(latestByOther, decision)) {
       const conflict = this.buildContradiction(latestByOther, decision);
       this.store.insertConflict(conflict);
       this.bus.emit({ type: 'conflict_detected', conflict });
@@ -125,6 +227,49 @@ export class DecisionLog {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Heuristic: a pair is a likely contradiction iff
+   *   1. Neither summary contains an explicit "supersede"-style marker
+   *      (those are agreements, not contradictions), AND
+   *   2. EITHER the category is a technical-choice one (architecture,
+   *      database, dependency, etc.) where same-category cross-agent is
+   *      almost always a real contradiction, OR
+   *      the summaries share enough content tokens to be plausibly about
+   *      the same subject (Jaccard >= MIN_OVERLAP).
+   *
+   * The split prevents the previous false-positive storm in `convention`
+   * (process/etiquette) decisions while keeping real database/architecture
+   * choice clashes flagged.
+   */
+  private isLikelyContradiction(existing: Decision, incoming: Decision): boolean {
+    const a = `${existing.summary} ${existing.rationale}`.toLowerCase();
+    const b = `${incoming.summary} ${incoming.rationale}`.toLowerCase();
+
+    if (/\b(supersede|supersedes|obsoletes|replaces|defers? to)\b/.test(a)) return false;
+    if (/\b(supersede|supersedes|obsoletes|replaces|defers? to)\b/.test(b)) return false;
+
+    // Technical-choice categories: same-category cross-agent is always a
+    // real contradiction worth flagging (e.g. PostgreSQL vs MongoDB share
+    // zero keywords but are obviously conflicting database choices).
+    if (TECHNICAL_CHOICE_CATEGORIES.has(incoming.category)) {
+      return true;
+    }
+
+    // Process / convention categories: require topical overlap so unrelated
+    // process decisions don't all flag against each other.
+    const tokensA = contentTokens(a);
+    const tokensB = contentTokens(b);
+    if (tokensA.size === 0 || tokensB.size === 0) return false;
+
+    let intersection = 0;
+    for (const t of tokensA) {
+      if (tokensB.has(t)) intersection++;
+    }
+    const union = tokensA.size + tokensB.size - intersection;
+    if (union === 0) return false;
+    return intersection / union >= MIN_OVERLAP;
   }
 
   /** Build a contradiction conflict between two decisions. */

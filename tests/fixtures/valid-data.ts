@@ -247,7 +247,12 @@ export const SERVER_MESSAGES: readonly ServerMessage[] = [
   { type: 'agent_left', agentId: agentId('agent-bob-01') },
   { type: 'agent_heartbeat', agentId: agentId('agent-gabriel-01'), timestamp: NOW },
   { type: 'file_claimed', ownership: OWNERSHIP_EXCLUSIVE },
-  { type: 'file_released', filePath: 'src/types.ts', agentId: agentId('agent-alice-01') },
+  {
+    type: 'file_released',
+    filePath: 'src/types.ts',
+    agentId: agentId('agent-alice-01'),
+    reason: 'manual',
+  },
   { type: 'task_created', task: TASK_PENDING },
   { type: 'task_updated', task: TASK_IN_PROGRESS },
   { type: 'knowledge_shared', entry: KNOWLEDGE_FILE_SUMMARY },

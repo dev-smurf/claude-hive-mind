@@ -283,6 +283,57 @@ describe('contradiction detection', () => {
     expect(conflictEvents).toHaveLength(0);
   });
 
+  it('does NOT flag unrelated convention decisions (Marie false-positive case)', () => {
+    log.log({
+      agentId: GABRIEL,
+      category: 'convention',
+      summary: 'Felix owns collab refactor; Marie audits crypto',
+      rationale: 'Coordination call after 409',
+    });
+    log.log({
+      agentId: ALICE,
+      category: 'convention',
+      summary: 'Mark Bob edits with comment',
+      rationale: 'Provenance trail',
+    });
+    const conflictEvents = emitted.filter((e) => e.type === 'conflict_detected');
+    expect(conflictEvents).toHaveLength(0);
+  });
+
+  it('flags overlapping convention decisions (real contradiction)', () => {
+    log.log({
+      agentId: GABRIEL,
+      category: 'convention',
+      summary: 'Use camelCase for variables',
+      rationale: 'JS idiomatic',
+    });
+    log.log({
+      agentId: ALICE,
+      category: 'convention',
+      summary: 'Use snake_case for variables',
+      rationale: 'Python idiomatic',
+    });
+    const conflictEvents = emitted.filter((e) => e.type === 'conflict_detected');
+    expect(conflictEvents.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('treats explicit supersede markers as agreement, not contradiction', () => {
+    log.log({
+      agentId: GABRIEL,
+      category: 'database',
+      summary: 'Use PostgreSQL',
+      rationale: 'ACID',
+    });
+    log.log({
+      agentId: ALICE,
+      category: 'database',
+      summary: 'Use SQLite (supersedes earlier PostgreSQL choice)',
+      rationale: 'simpler for MVP',
+    });
+    const conflictEvents = emitted.filter((e) => e.type === 'conflict_detected');
+    expect(conflictEvents).toHaveLength(0);
+  });
+
   it('still records the decision even when contradiction detected', () => {
     log.log({
       agentId: GABRIEL,

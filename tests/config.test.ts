@@ -112,9 +112,9 @@ describe('config', () => {
       expect(config.heartbeatIntervalMs).toBe(10_000);
     });
 
-    it('sets heartbeat timeout to 30s', () => {
+    it('sets heartbeat timeout to 90s', () => {
       const config = loadConfig();
-      expect(config.heartbeatTimeoutMs).toBe(30_000);
+      expect(config.heartbeatTimeoutMs).toBe(90_000);
     });
 
     it('sets stale agent cleanup to 60s', () => {

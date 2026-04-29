@@ -279,7 +279,7 @@ const SCHEMA = `
     claimed_at  TEXT NOT NULL,
     expires_at  TEXT,
     branch      TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (file_path, branch),
+    PRIMARY KEY (file_path, branch, agent_id),
     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
   );
 
@@ -385,6 +385,38 @@ function runMigrations(db: BetterSqlite3.Database): void {
     }
     if (!colNames.has('agent_token')) {
       db.exec("ALTER TABLE agents ADD COLUMN agent_token TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Migrate file_ownership PK from (file_path, branch) to
+    // (file_path, branch, agent_id) so multiple agents can each hold a
+    // shared claim on the same file simultaneously.
+    const indexes = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='file_ownership'")
+      .all() as { sql: string }[];
+    const existingSql = indexes[0]?.sql ?? '';
+    const needsPkMigration =
+      existingSql.includes('PRIMARY KEY (file_path, branch)') &&
+      !existingSql.includes('PRIMARY KEY (file_path, branch, agent_id)');
+
+    if (needsPkMigration) {
+      db.exec(`
+        CREATE TABLE file_ownership_new (
+          file_path   TEXT NOT NULL,
+          agent_id    TEXT NOT NULL,
+          mode        TEXT NOT NULL,
+          task_id     TEXT,
+          claimed_at  TEXT NOT NULL,
+          expires_at  TEXT,
+          branch      TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (file_path, branch, agent_id),
+          FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+        );
+        INSERT INTO file_ownership_new
+          SELECT file_path, agent_id, mode, task_id, claimed_at, expires_at, branch
+          FROM file_ownership;
+        DROP TABLE file_ownership;
+        ALTER TABLE file_ownership_new RENAME TO file_ownership;
+      `);
     }
   })();
 }
@@ -565,8 +597,7 @@ export class Store {
       .prepare(
         `INSERT INTO file_ownership (file_path, agent_id, mode, task_id, claimed_at, expires_at, branch)
          VALUES (@filePath, @agentId, @mode, @taskId, @claimedAt, @expiresAt, @branch)
-         ON CONFLICT(file_path, branch) DO UPDATE SET
-           agent_id = @agentId,
+         ON CONFLICT(file_path, branch, agent_id) DO UPDATE SET
            mode = @mode,
            task_id = @taskId,
            claimed_at = @claimedAt,
@@ -583,11 +614,31 @@ export class Store {
       });
   }
 
+  /**
+   * Returns the FIRST claim on (file_path, branch). With shared mode allowing
+   * multiple claims, callers that need agent-scoped lookups should use
+   * `getFileOwnershipByAgent` instead.
+   */
   getFileOwnership(filePath: string, branch?: string | null): FileOwnership | undefined {
     const branchVal = branch ?? '';
     const row = this.db
-      .prepare('SELECT * FROM file_ownership WHERE file_path = ? AND branch = ?')
+      .prepare(
+        'SELECT * FROM file_ownership WHERE file_path = ? AND branch = ? ORDER BY claimed_at LIMIT 1',
+      )
       .get(filePath, branchVal) as FileOwnershipRow | undefined;
+    return row ? rowToFileOwnership(row) : undefined;
+  }
+
+  /** Look up a specific agent's claim on a (file_path, branch). */
+  getFileOwnershipByAgent(
+    filePath: string,
+    branch: string | null,
+    agentIdVal: AgentId,
+  ): FileOwnership | undefined {
+    const branchVal = branch ?? '';
+    const row = this.db
+      .prepare('SELECT * FROM file_ownership WHERE file_path = ? AND branch = ? AND agent_id = ?')
+      .get(filePath, branchVal, agentIdVal) as FileOwnershipRow | undefined;
     return row ? rowToFileOwnership(row) : undefined;
   }
 
@@ -613,11 +664,17 @@ export class Store {
     return rows.map(rowToFileOwnership);
   }
 
-  deleteFileOwnership(filePath: string, branch?: string | null): void {
+  /**
+   * Delete a specific agent's claim on (file_path, branch). The agent_id is
+   * required so a release call cannot accidentally erase another agent's
+   * shared claim on the same file.
+   */
+  deleteFileOwnership(filePath: string, branch: string | null, agentIdVal: AgentId): boolean {
     const branchVal = branch ?? '';
-    this.db
-      .prepare('DELETE FROM file_ownership WHERE file_path = ? AND branch = ?')
-      .run(filePath, branchVal);
+    const result = this.db
+      .prepare('DELETE FROM file_ownership WHERE file_path = ? AND branch = ? AND agent_id = ?')
+      .run(filePath, branchVal, agentIdVal);
+    return result.changes > 0;
   }
 
   deleteFilesByAgent(agentIdVal: AgentId): void {

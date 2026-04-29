@@ -221,7 +221,12 @@ export const serverMessageSchema = z.discriminatedUnion('type', [
     timestamp: isoTimestampSchema,
   }),
   z.object({ type: z.literal('file_claimed'), ownership: fileOwnershipSchema }),
-  z.object({ type: z.literal('file_released'), filePath: nonEmptyString, agentId: nonEmptyString }),
+  z.object({
+    type: z.literal('file_released'),
+    filePath: nonEmptyString,
+    agentId: nonEmptyString,
+    reason: z.enum(['manual', 'expired']),
+  }),
   z.object({ type: z.literal('task_created'), task: taskSchema }),
   z.object({ type: z.literal('task_updated'), task: taskSchema }),
   z.object({ type: z.literal('knowledge_shared'), entry: knowledgeEntrySchema }),

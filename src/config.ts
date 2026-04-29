@@ -148,7 +148,10 @@ export function loadConfig(): Config {
 
     // Agent lifecycle
     heartbeatIntervalMs: envInt('CHM_HEARTBEAT_INTERVAL_MS', 10_000),
-    heartbeatTimeoutMs: envInt('CHM_HEARTBEAT_TIMEOUT_MS', 30_000),
+    // 90s (3× heartbeat interval). The previous 30s reaped agents
+    // mid-edit during stress tests where a single tool call blocked
+    // the heartbeat loop for longer than the timeout.
+    heartbeatTimeoutMs: envInt('CHM_HEARTBEAT_TIMEOUT_MS', 90_000),
     staleAgentCleanupMs: envInt('CHM_STALE_CLEANUP_MS', 60_000),
 
     // File ownership

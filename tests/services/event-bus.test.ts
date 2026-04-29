@@ -334,7 +334,12 @@ describe('all message types', () => {
         expiresAt: null,
       },
     },
-    { type: 'file_released', filePath: 'test.ts', agentId: agentId('agent-01') },
+    {
+      type: 'file_released',
+      filePath: 'test.ts',
+      agentId: agentId('agent-01'),
+      reason: 'manual',
+    },
     {
       type: 'task_created',
       task: {

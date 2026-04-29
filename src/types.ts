@@ -311,7 +311,13 @@ export type ServerMessage =
       readonly timestamp: ISOTimestamp;
     }
   | { readonly type: 'file_claimed'; readonly ownership: FileOwnership }
-  | { readonly type: 'file_released'; readonly filePath: string; readonly agentId: AgentId }
+  | {
+      readonly type: 'file_released';
+      readonly filePath: string;
+      readonly agentId: AgentId;
+      /** How the claim ended: 'manual' (release call) or 'expired' (TTL). */
+      readonly reason: 'manual' | 'expired';
+    }
   | { readonly type: 'task_created'; readonly task: Task }
   | { readonly type: 'task_updated'; readonly task: Task }
   | { readonly type: 'knowledge_shared'; readonly entry: KnowledgeEntry }

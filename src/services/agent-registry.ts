@@ -116,8 +116,11 @@ export class AgentRegistry {
     const now = isoTimestamp();
     this.store.updateAgentHeartbeat(id, now);
 
-    // Revive idle agents on heartbeat
-    if (agent.status === 'idle') {
+    // Revive idle OR disconnected agents on a successful heartbeat. Without
+    // the disconnected branch, an agent reaped by the stale-cleanup sweep
+    // could keep heartbeating successfully but stay invisible to the list
+    // endpoints — a real coordination hazard.
+    if (agent.status === 'idle' || agent.status === 'disconnected') {
       this.store.updateAgentStatus(id, 'active');
     }
 
@@ -207,6 +210,20 @@ export class AgentRegistry {
   /** Look up an agent by their token. Used by the auth middleware. */
   getAgentByToken(token: string): AgentRecord | undefined {
     return this.store.getAgentByToken(token);
+  }
+
+  /**
+   * Mint a fresh per-agent token for an existing agent. The old token is
+   * immediately invalidated. Returns the new token (raw — never persisted
+   * outside of its hash). The agent's identity, claims, and history all
+   * remain unchanged.
+   */
+  rotateToken(id: AgentId): string | null {
+    const agent = this.store.getAgent(id);
+    if (!agent) return null;
+    const newToken = generateAgentToken();
+    this.store.upsertAgent(agent, newToken);
+    return newToken;
   }
 
   /**

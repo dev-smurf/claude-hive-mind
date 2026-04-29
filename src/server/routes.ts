@@ -236,6 +236,24 @@ export function createRoutes(services: RouteServices): Router {
     res.json({ ok: true });
   });
 
+  /**
+   * Rotate an agent's bearer token. The caller proves ownership via the
+   * existing token (or admin), the server mints a new one and the old one
+   * stops working immediately. Useful when a token is suspected leaked or
+   * after a long session.
+   */
+  router.post('/api/agents/:id/rotate-token', (req: Request, res: Response) => {
+    const id = param(req, 'id');
+    if (!requireAgentMatch(req, res, id)) return;
+
+    const newToken = registry.rotateToken(agentId(id));
+    if (!newToken) {
+      res.status(404).json({ error: 'Agent not found' });
+      return;
+    }
+    res.json({ agentId: id, agentToken: newToken });
+  });
+
   router.get('/api/agents', (req: Request, res: Response) => {
     const agents = registry.getConnectedAgents();
     res.json(agents.map((a) => sanitizeAgent(req, a)));
@@ -288,16 +306,32 @@ export function createRoutes(services: RouteServices): Router {
       }
       if (!requireAgentMatch(req, res, aid)) return;
 
-      const ok = fileOwnership.release(param(req, 'path'), agentId(aid));
-      if (!ok) {
-        res.status(404).json({ error: 'File not claimed by this agent' });
+      const result = fileOwnership.release(param(req, 'path'), agentId(aid));
+      if (result.released) {
+        res.json({ ok: true });
         return;
       }
-      res.json({ ok: true });
+      // Distinguish the 3 failure modes so callers can react appropriately
+      // (e.g. retry vs. give up vs. wait for the other agent to release).
+      const messages: Record<string, string> = {
+        'no-claim-exists': 'No claim exists on this file',
+        'held-by-other-agent': 'File is claimed by a different agent',
+        'no-matching-claim': 'You no longer hold a claim on this file (expired or reaped)',
+      };
+      const reason = result.reason ?? 'no-matching-claim';
+      res.status(404).json({
+        error: messages[reason] ?? 'File not claimed by this agent',
+        reason,
+      });
     }),
   );
 
-  router.get('/api/files', (_req: Request, res: Response) => {
+  router.get('/api/files', (req: Request, res: Response) => {
+    const aid = queryParam(req, 'agentId');
+    if (aid) {
+      res.json(fileOwnership.getFilesByAgent(agentId(aid)));
+      return;
+    }
     res.json(fileOwnership.getAllOwnerships());
   });
 

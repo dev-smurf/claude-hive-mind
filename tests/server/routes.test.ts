@@ -1746,6 +1746,115 @@ describe('HTTP API', () => {
   });
 
   // -----------------------------------------------------------------------
+  // Token rotation
+  // -----------------------------------------------------------------------
+
+  describe('Token rotation', () => {
+    let authedServer: HiveMindServer;
+    let authedBase: string;
+
+    beforeEach(async () => {
+      authedServer = createHiveMindServer(
+        testConfig({ authEnabled: true, authToken: 'admin-secret' }),
+      );
+      await authedServer.start();
+      authedBase = baseUrl(authedServer);
+    });
+
+    afterEach(async () => {
+      await authedServer.stop();
+    });
+
+    it('agent can rotate own token; new token works, old does not', async () => {
+      const reg = await post(
+        `${authedBase}/api/agents/register`,
+        { displayName: 'X', tool: 'claude-code', workspacePath: '/x' },
+        'admin-secret',
+      );
+      const a = (await reg.json()) as { id: string; agentToken: string };
+
+      const rotateRes = await post(
+        `${authedBase}/api/agents/${a.id}/rotate-token`,
+        {},
+        a.agentToken,
+      );
+      expect(rotateRes.status).toBe(200);
+      const { agentToken: newToken } = (await rotateRes.json()) as { agentToken: string };
+      expect(newToken).not.toBe(a.agentToken);
+
+      // Old token rejected
+      const old = await post(`${authedBase}/api/agents/${a.id}/heartbeat`, {}, a.agentToken);
+      expect(old.status).toBe(403);
+
+      // New token accepted
+      const fresh = await post(`${authedBase}/api/agents/${a.id}/heartbeat`, {}, newToken);
+      expect(fresh.status).toBe(200);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // /api/files agentId filter (M1) and JSON 404 (M2)
+  // -----------------------------------------------------------------------
+
+  describe('Files list filter & JSON 404', () => {
+    it('GET /api/files?agentId=X returns only that agent claims', async () => {
+      const a = await registerAgent(base, 'A');
+      const b = await registerAgent(base, 'B');
+      await post(`${base}/api/files/claim`, {
+        filePath: 'a.ts',
+        agentId: a.id,
+        mode: 'exclusive',
+      });
+      await post(`${base}/api/files/claim`, {
+        filePath: 'b.ts',
+        agentId: b.id,
+        mode: 'exclusive',
+      });
+
+      const res = await get(`${base}/api/files?agentId=${a.id}`);
+      const body = (await res.json()) as { agentId: string }[];
+      expect(body).toHaveLength(1);
+      expect(body[0]?.agentId).toBe(a.id);
+    });
+
+    it('unknown route returns JSON 404 (not Express HTML)', async () => {
+      const res = await get(`${base}/api/this-route-does-not-exist`);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string; path: string };
+      expect(body.error).toBeTruthy();
+      expect(body.path).toContain('does-not-exist');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Release error reasons (L1)
+  // -----------------------------------------------------------------------
+
+  describe('Release diagnostic reasons', () => {
+    it('returns no-claim-exists when no agent has claimed', async () => {
+      const a = await registerAgent(base);
+      const res = await del(`${base}/api/files/never-claimed.ts?agentId=${a.id}`);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { reason: string };
+      expect(body.reason).toBe('no-claim-exists');
+    });
+
+    it('returns held-by-other-agent when someone else has it', async () => {
+      const a = await registerAgent(base, 'A');
+      const b = await registerAgent(base, 'B');
+      await post(`${base}/api/files/claim`, {
+        filePath: 'fight.ts',
+        agentId: a.id,
+        mode: 'exclusive',
+      });
+      const res = await del(`${base}/api/files/fight.ts?agentId=${b.id}`);
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { reason: string };
+      expect(body.reason).toBe('held-by-other-agent');
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // Rate limiting
   // -----------------------------------------------------------------------
 

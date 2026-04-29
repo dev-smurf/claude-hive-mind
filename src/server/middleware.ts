@@ -124,10 +124,21 @@ export function requireAgentMatch(req: Request, res: Response, agentIdParam: str
     return false;
   }
   if (auth.authMode === 'admin') return true;
-  if (auth.authenticatedAgentId === agentIdParam) {
+  if (auth.authMode === 'agent' && auth.authenticatedAgentId === agentIdParam) {
     return true;
   }
-  res.status(403).json({ error: 'Token does not authorize this operation' });
+  // Differentiate between "wrong token type" and "wrong agent".
+  if (auth.authMode === 'bootstrap') {
+    res
+      .status(403)
+      .json({ error: 'Bootstrap (join) tokens cannot mutate agent state — register first' });
+    return false;
+  }
+  res.status(403).json({
+    error: 'Agent token does not match the agent in this request',
+    authenticatedAgentId: auth.authenticatedAgentId,
+    requestedAgentId: agentIdParam,
+  });
   return false;
 }
 
@@ -152,7 +163,14 @@ export function requireOwnerOrAdmin(
   if (ownerAgentId !== null && auth.authenticatedAgentId === ownerAgentId) {
     return true;
   }
-  res.status(403).json({ error: 'Token does not authorize this operation' });
+  res.status(403).json({
+    error:
+      ownerAgentId === null
+        ? 'Resource has no owner — admin token required'
+        : 'Only the resource owner or admin can perform this action',
+    ownerAgentId,
+    yourAgentId: auth.authenticatedAgentId ?? null,
+  });
   return false;
 }
 
