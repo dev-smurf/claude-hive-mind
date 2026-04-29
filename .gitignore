@@ -40,3 +40,9 @@ temp/
 # Local research docs
 BRAINSTORM.md
 research/
+
+# Build artifacts and DB
+*.tgz
+*.db
+*.db-shm
+*.db-wal
