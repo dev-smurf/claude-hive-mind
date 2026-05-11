@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@lobehub/icons-static-svg": "^1.88.0",
+    "@lobehub/icons-static-svg": "^1.90.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
